@@ -1,0 +1,29 @@
+---
+title: "Upper Oconee AR maps"
+author: "Quentin D. Read"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Here I am going to plot some of the Upper Oconee AR data on maps, and generate some basic spatial statistics, to see if there is any spatial pattern in the data. The goal here is to do some exploratory data analysis before trying to put things into a formal statistical model.
+
+First load the coordinates and convert to a shapefile. Save as a GeoJSON shapefile for future use.
+
+```{r}
+library(sf)
+library(readxl)
+library(dplyr)
+
+site_locs <- read_xlsx('project/AR paper_sampling sites_location.xlsx')
+names(site_locs) <- c('site', 'lat', 'lon')
+
+site_sp <- st_as_sf(site_locs, coords = c('lon', 'lat'), crs = st_crs(4326)) %>%
+  mutate(area = substr(site, 1, 4))
+
+st_write(site_sp, 'project/sites.geojson', driver = 'GeoJSON')
+```
+
