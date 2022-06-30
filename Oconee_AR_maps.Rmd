@@ -11,19 +11,134 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 
 Here I am going to plot some of the Upper Oconee AR data on maps, and generate some basic spatial statistics, to see if there is any spatial pattern in the data. The goal here is to do some exploratory data analysis before trying to put things into a formal statistical model.
 
-First load the coordinates and convert to a shapefile. Save as a GeoJSON shapefile for future use.
+## Processing the spatial data
+
+The spatial data needed are:
+
+- boundaries of the Upper Oconee watershed
+- [National Land Cover Database (NLCD)](https://mrlc.gov/data) land cover type and impervious surface percentage raster data
+- [National Hydrography Database (NHD)](https://www.usgs.gov/national-hydrography/access-national-hydrography-products) paths of streams and rivers in the watershed
+
+[Main page for USGS hydrography data](https://www.usgs.gov/national-hydrography/access-national-hydrography-products)
+
+To get the boundaries of the Upper Oconee, I looked up its [HUC8 watershed code](https://water.usgs.gov/lookup/getwatershed?03070101) which is `03070101`. I went to [this download page](https://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Hydrography/WBD/HU2/GPKG/) and downloaded [this file of the HUC2 watershed boundaries for the Southeastern USA](https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/WBD/HU2/GPKG/WBD_03_HU2_GPKG.zip) and pulled out the polygon for the Upper Oconee (see below).
+
+To get the NLCD land cover type and impervious surface rasters, I downloaded the data for the entire USA (large files) from [this MRLC download page](https://www.mrlc.gov/data?f%5B0%5D=year%3A2019). The specific files I downloaded were [this one for 2019 land cover](https://s3-us-west-2.amazonaws.com/mrlc/nlcd_2019_land_cover_l48_20210604.zip) and [this one for 2019 impervious surface](https://s3-us-west-2.amazonaws.com/mrlc/nlcd_2019_impervious_l48_20210604.zip).
+
+To get the NHD stream and river paths, I went to [this download page](https://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Hydrography/NHD/HU8/GPKG/) and downloaded [this file for the Upper Oconee HUC8 watershed](https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHD/HU8/GPKG/NHD_H_03070101_HU8_GPKG.zip).
+
+Load the R packages.
 
 ```{r}
 library(sf)
 library(readxl)
 library(dplyr)
+library(data.table)
+library(stringr)
+```
 
+First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. (Note: this portion of the code is not run when the notebook is created.)
+
+```{r, eval = FALSE}
 site_locs <- read_xlsx('project/AR paper_sampling sites_location.xlsx')
 names(site_locs) <- c('site', 'lat', 'lon')
 
-site_sp <- st_as_sf(site_locs, coords = c('lon', 'lat'), crs = st_crs(4326)) %>%
+site_sp <- st_as_sf(site_locs, coords = c('lon', 'lat'), crs = st_crs('+proj=longlat')) %>%
   mutate(area = substr(site, 1, 4))
 
-st_write(site_sp, 'project/sites.geojson', driver = 'GeoJSON')
+st_write(site_sp, 'project/sites.gpkg', driver = 'GPKG')
+
+st_layers('~/spatial_data/WBD_03_HU2_GPKG.gpkg')
+huc8s <- st_read(dsn = '~/spatial_data/WBD_03_HU2_GPKG.gpkg', layer = 'WBDHU8')
+upper_oconee <- huc8s %>% filter(huc8 == '03070101')
+
+st_write(upper_oconee, 'project/upper_oconee.gpkg', driver = 'GPKG')
+```
+
+Transform watershed boundary shapefile to the same projection as the NLCD rasters so it can be used to crop them.
+
+```{r, eval = FALSE}
+library(stars)
+nlcd <- read_stars('~/spatial_data/nlcd_2019_land_cover_l48_20210604.img')
+upper_oconee <- st_read('project/upper_oconee.gpkg')
+upper_oconee_AEA <- st_transform(upper_oconee, crs = st_crs(nlcd))
+st_write(upper_oconee_AEA, 'project/upper_oconee_AEA.gpkg', driver = 'GPKG')
+```
+
+Finally, crop the NLCD raster to those boundaries. This is done with a shell script on SciNet because I do not have my local computer configured to use GDAL in this way.
+
+```{bash, eval = FALSE}
+module load gdal
+cd /project/qdr/spatial
+
+gdalwarp -crop_to_cutline -cutline upper_oconee_AEA.gpkg -of GTiff nlcd_2019_land_cover_l48_20210604.img nlcd_land_cover_upper_oconee.tif
+gdalwarp -crop_to_cutline -cutline upper_oconee_AEA.gpkg -of GTiff nlcd_2019_impervious_l48_20210604.img nlcd_impervious_upper_oconee.tif
+```
+
+## Read and process raw data
+
+Next, read the raw data in and convert it to a form usable for analysis and mapping. We will need to:
+
+- Fill in environmental data covariates in cases where a sample has multiple isolates.
+- Distinguish rows where species is `-` from rows where there is no data.
+- Create separate datasets for environmental covariates, lactamase presence-absence, antibiotic concentrations, and ARG absolute and relative copy numbers that can be joined together later.
+
+Some code here was copied from the UGA statistician's code. While looking at the UGA statistician's code I noticed that they removed any isolate beyond the first from the dataset from each sample. So that is probably not good.
+
+```{r}
+water_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'water samples', skip = 7) |> setDT()
+wastewater_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'wastewater samples', skip = 6) |> setDT()
+
+correct_names_watersample = c("sample_no", 'season', 'site', 
+                              'temperature','pH','conductivity','turbidity','Ecoli_counts',
+                              'Bl_species',
+                              'Bl_Amp','Bl_Faz','Bl_Fep','Bl_Fot','Bl_Fox','Bl_Pod','Bl_Taz','Bl_Axo','Bl_Cep','Bl_Cip','Bl_Gen','Bl_Imi','Bl_P/T4','Bl_Mer',
+                              'Bl_blaCTX-M','Bl_blaTEM','Bl_blaCMY-2','Bl_blaSHV','Bl_blaOXA','Bl_blaIMI-NmcA','Bl_blaKPC',
+                              'ESBL','CRE',
+                              'AR_Ecoli_presence',
+                              'AR_Ecoli_Amo/Cla','AR_Ecoli_Amp','AR_Ecoli_Azi','AR_Ecoli_Chl','AR_Ecoli_Fox','AR_Ecoli_Tio','AR_Ecoli_Axo','AR_Ecoli_Cip','AR_Ecoli_Gen','AR_Ecoli_Nal','AR_Ecoli_Str','AR_Ecoli_Sul','AR_Ecoli_Tet','AR_Ecoli_Tri/Smx',
+                              'Salmonella_presence',
+                              'Salmonella_Amo/Cla','Salmonella_Amp','Salmonella_Fox','Salmonella_Tio','Salmonella_Axo','Salmonella_Chl','Salmonella_Gen','Salmonella_Str','Salmonella_Sul','Salmonella_Tet',
+                              'Enterococcus_presence',
+                              'Enterococcus_Cip','Enterococcus_Dap','Enterococcus_Ery','Enterococcus_Lin','Enterococcus_Nit','Enterococcus_Pen','Enterococcus_Str','Enterococcus_Syn','Enterococcus_Tet','Enterococcus_Tyl',
+                              'Amo','Amp','Azi','Axo','Taz','Tio','Cip','Dap','Ery','Gen','Kan','Lin','Lnz','Mer','Met','Nal',
+                              'Oxa','Pen','Smx','Sul','Str','Tig','Tri','Tet','Tyl','Van','total',
+                              'abs_ermB','abs_tetB','abs_blaKPC','abs_blaSHV','abs_qnrS','abs_blaCTX-M','abs_total',
+                              'rlt_ermB','rlt_tetB','rlt_blaKPC','rlt_blaSHV','rlt_qnrS','rlt_blaCTX-M','rlt_total'
+)
+
+setnames(water_sample_rawdata, correct_names_watersample)
+water_sample_rawdata[, area := substr(site, 1, 4)]
+
+# Create environmental dataframe with no duplicated rows
+id_cols <- c(correct_names_watersample[1:3], 'area')
+env_cols <- c(id_cols, correct_names_watersample[4:8])
+
+water_sample_environmental <- water_sample_rawdata[, ..env_cols]
+water_sample_environmental <- water_sample_environmental[!is.na(sample_no) & !duplicated(sample_no)]
+
+# Separate the column with AR salmonella presence and number of isolates combined into one column into two separate columns
+water_sample_rawdata[, Salmonella_n_isolates := as.numeric(str_extract(Salmonella_presence, '[0-9]'))]
+water_sample_rawdata[, Salmonella_presence := substr(Salmonella_presence, 1, 1)]
+
+# Separate antibiotic concentrations into a separate dataframe
+antibiotic_conc_idx <- which(names(water_sample_rawdata) == 'Amo'):which(names(water_sample_rawdata) == 'total')
+antibiotic_conc_cols <- c(id_cols, names(water_sample_rawdata)[antibiotic_conc_idx])
+
+# Here also get rid of the duplicated rows
+water_sample_antibiotic_conc <- water_sample_rawdata[, ..antibiotic_conc_cols]
+water_sample_antibiotic_conc <- water_sample_antibiotic_conc[!is.na(sample_no) & !duplicated(sample_no)]
+
+# Separate ARG copy numbers into a separate dataframe
+arg_copy_cols <- c(id_cols, grep('(^abs)|(^rlt)', names(water_sample_rawdata), value = TRUE))
+
+# Again, get rid of the duplicated rows
+water_sample_arg_copynum <- water_sample_rawdata[, ..arg_copy_cols]
+water_sample_arg_copynum <- water_sample_arg_copynum[!is.na(sample_no) & !duplicated(sample_no)]
+
+# FIXME dataframe for beta-lactamase containing bacteria
+# FIXME dataframe for AR bacteria
+
+
 ```
 
