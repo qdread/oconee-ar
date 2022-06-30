@@ -362,10 +362,11 @@ season_order <- c('fall', 'winter', 'spring', 'summer')
 w_env_ar[, season := factor(season, levels = season_order)]
 ```
 
-Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences are relatively small so there is not very much basis to detect a trend, except possibly for *Salmonella* where we see all but 1 of the 11 presences were from the fall.
+Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences of AR *E. coli* and *Enterococcus* are relatively small so there is not very much basis to detect a trend. However for *Salmonella*  we see all but 1 of the 11 presences were from the fall. The majority of ESBL was observed in the winter, and CRE in the summer.
 
 ```{r, echo = FALSE}
-w_ar_pres_abs <- melt(w_env_ar, id.vars = w_id_cols, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence'), variable.name = 'taxon')
+w_ar_pres_abs <- melt(w_env_ar, id.vars = w_id_cols, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon')
+w_ar_pres_abs[, taxon := gsub('_presence', '', taxon)]
 w_ar_pres_abs_total <- w_ar_pres_abs[, .N, by = .(season, taxon, value)]
 w_ar_pres_abs_total[, present := factor(value, labels = c('absent', 'present'))]
 
@@ -378,12 +379,24 @@ ggplot(w_ar_pres_abs_total[!is.na(value)], aes(x = season, y = N, fill = present
 
 FIXME: PUT MORE PLOTS AND MAPS HERE
 
-Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data. Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
+Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by giving each season a random intercept). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
 
 ```{r}
-w_env_ar_model_data <- w_env_ar[, .(sample_no, season, site, temperature, pH, conductivity, turbidity, Ecoli_counts,
-                                    AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)]
+# Take log of E.coli counts and then scale all predictors.
+scaled_predictors <- w_env_ar[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+scaled_predictors <- scale(scaled_predictors)
 
+w_env_ar_model_data <- cbind(
+  w_env_ar[, .(sample_no, season, site, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)],
+  scaled_predictors)
 
+library(lme4)
+
+ESBL_mod <- glmer(ESBL ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
+CRE_mod <- glmer(CRE ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
+Enter_mod <- glmer(Enterococcus_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
+Salm_mod <- glmer(Salmonella_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
+AREc_mod <- glmer(AR_Ecoli_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
 ```
 
