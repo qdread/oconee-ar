@@ -37,9 +37,16 @@ library(tidyr)
 library(data.table)
 library(stringr)
 library(zoo)
+library(ggplot2)
+
+theme_set(
+  theme_bw() +
+    theme(strip.background = element_blank(),
+          panel.grid = element_blank())
+)
 ```
 
-First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. (Note: this portion of the code is not run when the notebook is created.)
+First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. Also get the smaller HUC12 watershed boundaries that are contained within the single boundary of the Upper Oconee. (Note: this portion of the code is not run when the notebook is created.)
 
 ```{r, eval = FALSE}
 site_locs <- read_xlsx('project/AR paper_sampling sites_location.xlsx')
@@ -55,6 +62,14 @@ huc8s <- st_read(dsn = '~/spatial_data/WBD_03_HU2_GPKG.gpkg', layer = 'WBDHU8')
 upper_oconee <- huc8s %>% filter(huc8 == '03070101')
 
 st_write(upper_oconee, 'project/upper_oconee.gpkg', driver = 'GPKG')
+
+huc12s <- st_read(dsn = '~/spatial_data/WBD_03_HU2_GPKG.gpkg', layer = 'WBDHU12')
+upper_oconee_huc12s <- huc12s %>% filter(substr(huc12, 1, 8) == '03070101') %>%
+  st_transform(crs = st_crs(site_sp))
+
+# Get only the huc12s intersecting with the sites.
+huc12s_use <- apply(st_intersects(upper_oconee_huc12s, site_sp, sparse = FALSE), 1, any)
+st_write(upper_oconee_huc12s[huc12s_use,], 'project/study_region_huc12s.gpkg', driver = 'GPKG')
 ```
 
 Transform watershed boundary shapefile to the same projection as the NLCD rasters so it can be used to crop them.
@@ -112,6 +127,7 @@ correct_names_watersample = c("sample_no", 'season', 'site',
 
 setnames(water_sample_rawdata, correct_names_watersample)
 water_sample_rawdata[, area := substr(site, 1, 4)]
+water_sample_rawdata[, season := tolower(season)]
 
 # Create environmental dataframe with no duplicated rows
 id_cols <- c(correct_names_watersample[1:3], 'area')
@@ -140,7 +156,7 @@ water_sample_arg_copynum <- water_sample_rawdata[, ..arg_copy_cols]
 water_sample_arg_copynum <- water_sample_arg_copynum[!is.na(sample_no) & !duplicated(sample_no)]
 
 # Separate beta-lactamase into a separate dataframe
-bl_cols <- c(id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
+bl_cols <- c(id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE))
 water_sample_bl <- water_sample_rawdata[, ..bl_cols]
 
 # Here, we may have multiple rows per sample so fill in the id columns down for those samples, then convert - and + to 0 and 1.
@@ -149,7 +165,7 @@ pres_abs_cols <- bl_cols[!bl_cols %in% c(id_cols, 'Bl_species')]
 water_sample_bl[, (pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = pres_abs_cols]
 
 # Separate AR bacteria (E.coli, Salmonella, and MDR Enterococcus) into a separate dataframe
-ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(water_sample_rawdata), value = TRUE), grep('^Salmonella', names(water_sample_rawdata), value = TRUE), grep('^Enterococcus', names(water_sample_rawdata), value = TRUE))
+ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(water_sample_rawdata), value = TRUE), grep('^Salmonella', names(water_sample_rawdata), value = TRUE), grep('^Enterococcus', names(water_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
 ar_cols <- c(id_cols, ar_pres_abs_cols)
 water_sample_ar <- water_sample_rawdata[, ..ar_cols]
 
@@ -181,6 +197,7 @@ correct_names_wastewater = c("sample_no", 'season', 'site', 'Ecoli_counts',
 # Correct names and create indicator column for influent versus effluent
 setnames(wastewater_sample_rawdata, correct_names_wastewater)
 wastewater_sample_rawdata <- separate(wastewater_sample_rawdata, site, into = c('site', 'type'), sep = ' ')
+wastewater_sample_rawdata[, season := tolower(season)]
 
 ww_id_cols <- c('sample_no', 'season', 'site', 'type')
 
@@ -209,7 +226,7 @@ wastewater_sample_arg_copynum <- wastewater_sample_rawdata[, ..arg_copy_cols]
 wastewater_sample_arg_copynum <- wastewater_sample_arg_copynum[!is.na(sample_no) & !duplicated(sample_no)]
 
 # Separate beta-lactamase into a separate dataframe
-bl_cols <- c(ww_id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
+bl_cols <- c(ww_id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE))
 wastewater_sample_bl <- wastewater_sample_rawdata[, ..bl_cols]
 
 # Here, we may have multiple rows per sample so fill in the id columns down for those samples, then convert - and + to 0 and 1.
@@ -218,7 +235,7 @@ pres_abs_cols <- bl_cols[!bl_cols %in% c(ww_id_cols, 'Bl_species')]
 wastewater_sample_bl[, (pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = pres_abs_cols]
 
 # Separate AR bacteria (E.coli, Salmonella, and MDR Enterococcus) into a separate dataframe
-ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(wastewater_sample_rawdata), value = TRUE), grep('^Salmonella', names(wastewater_sample_rawdata), value = TRUE), grep('^Enterococcus', names(wastewater_sample_rawdata), value = TRUE))
+ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(wastewater_sample_rawdata), value = TRUE), grep('^Salmonella', names(wastewater_sample_rawdata), value = TRUE), grep('^Enterococcus', names(wastewater_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
 ar_cols <- c(ww_id_cols, ar_pres_abs_cols)
 wastewater_sample_ar <- wastewater_sample_rawdata[, ..ar_cols]
 
@@ -239,5 +256,134 @@ save_objs <- c("wastewater_sample_antibiotic_conc",
 "water_sample_bl", "water_sample_environmental")
 
 lapply(save_objs, function(x) fwrite(get(x), file.path('project/csv', paste0(x, '.csv'))))
+```
+
+## Exploratory data visualization
+
+Here are some initial plots to take a look at what is going on with the data.
+
+First reload the data that was processed previously to a clean and usable form. Also load the spatial data.
+
+```{r}
+w_antibiotic_conc <- fread('project/csv/water_sample_antibiotic_conc.csv')
+w_ar <- fread('project/csv/water_sample_ar.csv')
+w_arg_copynum <- fread('project/csv/water_sample_arg_copynum.csv')
+w_bl <- fread('project/csv/water_sample_bl.csv')
+w_env <- fread('project/csv/water_sample_environmental.csv')
+ww_antibiotic_conc <- fread('project/csv/wastewater_sample_antibiotic_conc.csv')
+ww_ar <- fread('project/csv/wastewater_sample_ar.csv')
+ww_arg_copynum <- fread('project/csv/wastewater_sample_arg_copynum.csv')
+ww_bl <- fread('project/csv/wastewater_sample_bl.csv')
+ww_env <- fread('project/csv/wastewater_sample_ecolicounts.csv')
+
+w_id_cols <- c('sample_no', 'season', 'site', 'area')
+ww_id_cols <- c('sample_no', 'season', 'site', 'type')
+
+sites <- st_read('project/sites.gpkg')
+watersheds <- st_read('project/study_region_huc12s.gpkg')
+```
+
+### Maps of environmental variables
+
+The environmental variables may vary over time and space. Let's make some maps of these variables (potential predictor variables) to see how they might vary.
+
+```{r}
+sites_env <- full_join(sites, w_env)
+
+watersheds_proj <- st_transform(watersheds, crs = 26966)
+```
+
+Temperature appears to be higher in the SE part of the study area in summer. There is a very high temperature value in the winter -- might this be an error?
+
+```{r, echo = FALSE}
+theme_map <- theme(axis.text.x = element_blank(), axis.text.y = element_blank(),
+                   axis.ticks.x = element_blank(), axis.ticks.y = element_blank())
+
+ggplot() +
+  geom_sf(data = watersheds_proj, alpha = 0.3) +
+  geom_sf(data = sites_env, aes(fill = temperature), shape = 21, size = 2) +
+  facet_wrap(~ season) +
+  scale_fill_distiller(palette = 'RdYlBu') +
+  theme_map + theme(legend.position = 'bottom')
+```
+
+pH does not seem to have a strong spatial pattern but it does seem to be highest (most basic) in spring and lowest (most acidic) in winter.
+
+```{r, echo = FALSE}
+ggplot() +
+  geom_sf(data = watersheds_proj, alpha = 0.3) +
+  geom_sf(data = sites_env, aes(fill = pH), shape = 21, size = 2) +
+  facet_wrap(~ season) +
+  scale_fill_distiller(palette = 'Reds', direction = 1) +
+  theme_map + theme(legend.position = 'bottom')
+```
+
+Conductivity does not seem to vary much across the sites or seasons, so it is unlikely to explain much variation in any of the response variables. However there are some locations with very high conductivity values in winter.
+
+```{r, echo = FALSE}
+ggplot() +
+  geom_sf(data = watersheds_proj, alpha = 0.3) +
+  geom_sf(data = sites_env, aes(fill = conductivity), shape = 21, size = 2) +
+  facet_wrap(~ season) +
+  scale_fill_distiller(palette = 'RdYlGn', direction = -1) +
+  theme_map + theme(legend.position = 'bottom')
+```
+
+As you might expect, turbidity is low everywhere in fall and winter but increases at some locations in spring and summer (doesn't seem to have a lot of spatial pattern).
+
+```{r, echo = FALSE}
+ggplot() +
+  geom_sf(data = watersheds_proj, alpha = 0.3) +
+  geom_sf(data = sites_env, aes(fill = turbidity), shape = 21, size = 2) +
+  facet_wrap(~ season) +
+  scale_fill_distiller(palette = 'RdYlGn', direction = -1) +
+  theme_map + theme(legend.position = 'bottom')
+```
+
+Let's plot the *E. coli* counts too. I have used a (log+1) transform on the color scale. They do not seem to have an immediately obvious spatial pattern but they do decrease in winter, it seems like. That seems pretty plausible.
+
+```{r, echo = FALSE}
+ggplot() +
+  geom_sf(data = watersheds_proj, alpha = 0.3) +
+  geom_sf(data = sites_env, aes(fill = Ecoli_counts), shape = 21, size = 2) +
+  facet_wrap(~ season) +
+  scale_fill_distiller(palette = 'Blues', direction = 1, trans = 'log1p', breaks = c(10, 100, 1000)) +
+  theme_map + theme(legend.position = 'bottom')
+```
+
+
+### E. coli counts, environmental variables, and presence of AR taxa
+
+Join AR presence absence data with environmental data. 
+
+```{r}
+w_env_ar <- w_env[w_ar, on = w_id_cols]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_ar[, season := factor(season, levels = season_order)]
+```
+
+Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences are relatively small so there is not very much basis to detect a trend, except possibly for *Salmonella* where we see all but 1 of the 11 presences were from the fall.
+
+```{r, echo = FALSE}
+w_ar_pres_abs <- melt(w_env_ar, id.vars = w_id_cols, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence'), variable.name = 'taxon')
+w_ar_pres_abs_total <- w_ar_pres_abs[, .N, by = .(season, taxon, value)]
+w_ar_pres_abs_total[, present := factor(value, labels = c('absent', 'present'))]
+
+ggplot(w_ar_pres_abs_total[!is.na(value)], aes(x = season, y = N, fill = present)) +
+  geom_col(position = 'stack') +
+  facet_wrap(~ taxon) +
+  scale_fill_brewer(palette = 'Oranges') +
+  scale_y_continuous(expand = c(0, 0))
+```
+
+FIXME: PUT MORE PLOTS AND MAPS HERE
+
+Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data. Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
+
+```{r}
+w_env_ar_model_data <- w_env_ar[, .(sample_no, season, site, temperature, pH, conductivity, turbidity, Ecoli_counts,
+                                    AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)]
+
+
 ```
 
