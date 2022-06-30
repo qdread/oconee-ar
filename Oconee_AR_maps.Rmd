@@ -33,8 +33,10 @@ Load the R packages.
 library(sf)
 library(readxl)
 library(dplyr)
+library(tidyr)
 library(data.table)
 library(stringr)
+library(zoo)
 ```
 
 First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. (Note: this portion of the code is not run when the notebook is created.)
@@ -83,22 +85,23 @@ Next, read the raw data in and convert it to a form usable for analysis and mapp
 - Distinguish rows where species is `-` from rows where there is no data.
 - Create separate datasets for environmental covariates, lactamase presence-absence, antibiotic concentrations, and ARG absolute and relative copy numbers that can be joined together later.
 
-Some code here was copied from the UGA statistician's code. While looking at the UGA statistician's code I noticed that they removed any isolate beyond the first from the dataset from each sample. So that is probably not good.
+Some code here was copied from the UGA statistician's code. While looking at the UGA statistician's code I noticed that they removed any isolate beyond the first from the dataset from each sample. So that is probably not good. I have corrected this.
 
-```{r}
+```{r, eval = FALSE}
 water_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'water samples', skip = 7) |> setDT()
 wastewater_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'wastewater samples', skip = 6) |> setDT()
 
+# Column names created by UGA statistician
 correct_names_watersample = c("sample_no", 'season', 'site', 
                               'temperature','pH','conductivity','turbidity','Ecoli_counts',
                               'Bl_species',
-                              'Bl_Amp','Bl_Faz','Bl_Fep','Bl_Fot','Bl_Fox','Bl_Pod','Bl_Taz','Bl_Axo','Bl_Cep','Bl_Cip','Bl_Gen','Bl_Imi','Bl_P/T4','Bl_Mer',
-                              'Bl_blaCTX-M','Bl_blaTEM','Bl_blaCMY-2','Bl_blaSHV','Bl_blaOXA','Bl_blaIMI-NmcA','Bl_blaKPC',
+                              'Bl_Amp','Bl_Faz','Bl_Fep','Bl_Fot','Bl_Fox','Bl_Pod','Bl_Taz','Bl_Axo','Bl_Cep','Bl_Cip','Bl_Gen','Bl_Imi','Bl_P_T4','Bl_Mer',
+                              'Bl_blaCTX_M','Bl_blaTEM','Bl_blaCMY_2','Bl_blaSHV','Bl_blaOXA','Bl_blaIMI_NmcA','Bl_blaKPC',
                               'ESBL','CRE',
                               'AR_Ecoli_presence',
-                              'AR_Ecoli_Amo/Cla','AR_Ecoli_Amp','AR_Ecoli_Azi','AR_Ecoli_Chl','AR_Ecoli_Fox','AR_Ecoli_Tio','AR_Ecoli_Axo','AR_Ecoli_Cip','AR_Ecoli_Gen','AR_Ecoli_Nal','AR_Ecoli_Str','AR_Ecoli_Sul','AR_Ecoli_Tet','AR_Ecoli_Tri/Smx',
+                              'AR_Ecoli_Amo_Cla','AR_Ecoli_Amp','AR_Ecoli_Azi','AR_Ecoli_Chl','AR_Ecoli_Fox','AR_Ecoli_Tio','AR_Ecoli_Axo','AR_Ecoli_Cip','AR_Ecoli_Gen','AR_Ecoli_Nal','AR_Ecoli_Str','AR_Ecoli_Sul','AR_Ecoli_Tet','AR_Ecoli_Tri_Smx',
                               'Salmonella_presence',
-                              'Salmonella_Amo/Cla','Salmonella_Amp','Salmonella_Fox','Salmonella_Tio','Salmonella_Axo','Salmonella_Chl','Salmonella_Gen','Salmonella_Str','Salmonella_Sul','Salmonella_Tet',
+                              'Salmonella_Amo_Cla','Salmonella_Amp','Salmonella_Fox','Salmonella_Tio','Salmonella_Axo','Salmonella_Chl','Salmonella_Gen','Salmonella_Str','Salmonella_Sul','Salmonella_Tet',
                               'Enterococcus_presence',
                               'Enterococcus_Cip','Enterococcus_Dap','Enterococcus_Ery','Enterococcus_Lin','Enterococcus_Nit','Enterococcus_Pen','Enterococcus_Str','Enterococcus_Syn','Enterococcus_Tet','Enterococcus_Tyl',
                               'Amo','Amp','Azi','Axo','Taz','Tio','Cip','Dap','Ery','Gen','Kan','Lin','Lnz','Mer','Met','Nal',
@@ -136,9 +139,105 @@ arg_copy_cols <- c(id_cols, grep('(^abs)|(^rlt)', names(water_sample_rawdata), v
 water_sample_arg_copynum <- water_sample_rawdata[, ..arg_copy_cols]
 water_sample_arg_copynum <- water_sample_arg_copynum[!is.na(sample_no) & !duplicated(sample_no)]
 
-# FIXME dataframe for beta-lactamase containing bacteria
-# FIXME dataframe for AR bacteria
+# Separate beta-lactamase into a separate dataframe
+bl_cols <- c(id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
+water_sample_bl <- water_sample_rawdata[, ..bl_cols]
+
+# Here, we may have multiple rows per sample so fill in the id columns down for those samples, then convert - and + to 0 and 1.
+water_sample_bl[, (id_cols) := lapply(.SD, na.locf), .SDcols = id_cols]
+pres_abs_cols <- bl_cols[!bl_cols %in% c(id_cols, 'Bl_species')]
+water_sample_bl[, (pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = pres_abs_cols]
+
+# Separate AR bacteria (E.coli, Salmonella, and MDR Enterococcus) into a separate dataframe
+ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(water_sample_rawdata), value = TRUE), grep('^Salmonella', names(water_sample_rawdata), value = TRUE), grep('^Enterococcus', names(water_sample_rawdata), value = TRUE))
+ar_cols <- c(id_cols, ar_pres_abs_cols)
+water_sample_ar <- water_sample_rawdata[, ..ar_cols]
+
+# Again, fill in the ID columns down for any samples with multiple rows, then convert - and + to 0 and 1.
+water_sample_ar[, (id_cols) := lapply(.SD, na.locf), .SDcols = id_cols]
+water_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = ar_pres_abs_cols]
+```
+
+Do similar processing for the wastewater samples tab. Again borrow the corrected names code from the UGA statistician and modify.
+
+```{r, eval = FALSE}
+correct_names_wastewater = c("sample_no", 'season', 'site', 'Ecoli_counts',
+                             'Bl_species',
+                             'Bl_Amp','Bl_Faz','Bl_Fep','Bl_Fot','Bl_Fox','Bl_Pod','Bl_Taz','Bl_Axo','Bl_Cep','Bl_Cip','Bl_Gen','Bl_Imi','Bl_P_T4','Bl_Mer',
+                             'Bl_blaCTX_M','Bl_blaTEM','Bl_blaCMY_2','Bl_blaSHV','Bl_blaOXA','Bl_blaIMI_NmcA','Bl_blaKPC',
+                             'ESBL','CRE',
+                             'AR_Ecoli_presence',
+                             'AR_Ecoli_Amo_Cla','AR_Ecoli_Amp','AR_Ecoli_Azi','AR_Ecoli_Fox','AR_Ecoli_Tio','AR_Ecoli_Axo','AR_Ecoli_Cip','AR_Ecoli_Gen','AR_Ecoli_Nal','AR_Ecoli_Str','AR_Ecoli_Sul','AR_Ecoli_Tet','AR_Ecoli_Tri_Smx',
+                             'Salmonella_presence',
+                             'Salmonella_Str','Salmonella_Tet',
+                             'Enterococcus_presence',
+                             'Enterococcus_Cip','Enterococcus_Dap','Enterococcus_Ery','Enterococcus_Lin','Enterococcus_Nit','Enterococcus_Pen','Enterococcus_Str','Enterococcus_Syn','Enterococcus_Tet','Enterococcus_Tyl',
+                             'Amo','Amp','Azi','Axo','Taz','Tio','Cip','Dap','Ery','Gen','Kan','Lin','Lnz','Mer','Met','Nal',
+                             'Oxa','Pen','Smx','Sul','Str','Tig','Tri','Tet','Tyl','Van','total',
+                             'abs_ermB','abs_tetB','abs_blaKPC','abs_blaSHV','abs_qnrS','abs_blaCTX-M','abs_total',
+                             'rlt_ermB','rlt_tetB','rlt_blaKPC','rlt_blaSHV','rlt_qnrS','rlt_blaCTX-M','rlt_total'
+)
+
+# Correct names and create indicator column for influent versus effluent
+setnames(wastewater_sample_rawdata, correct_names_wastewater)
+wastewater_sample_rawdata <- separate(wastewater_sample_rawdata, site, into = c('site', 'type'), sep = ' ')
+
+ww_id_cols <- c('sample_no', 'season', 'site', 'type')
+
+# Create data frame with just ecoli counts that can be used as a key to join all the other ones together
+ecoli_cols <- c(ww_id_cols, 'Ecoli_counts')
+wastewater_sample_ecolicounts <- wastewater_sample_rawdata[, ..ecoli_cols]
+wastewater_sample_ecolicounts <- wastewater_sample_ecolicounts[!is.na(sample_no) & !duplicated(sample_no)]
+
+# Separate the column with AR salmonella presence and number of isolates combined into one column into two separate columns
+wastewater_sample_rawdata[, Salmonella_n_isolates := as.numeric(str_extract(Salmonella_presence, '[0-9]'))]
+wastewater_sample_rawdata[, Salmonella_presence := substr(Salmonella_presence, 1, 1)]
+
+# Separate antibiotic concentrations into a separate dataframe
+antibiotic_conc_idx <- which(names(wastewater_sample_rawdata) == 'Amo'):which(names(wastewater_sample_rawdata) == 'total')
+antibiotic_conc_cols <- c(ww_id_cols, names(wastewater_sample_rawdata)[antibiotic_conc_idx])
+
+# Here also get rid of the duplicated rows
+wastewater_sample_antibiotic_conc <- wastewater_sample_rawdata[, ..antibiotic_conc_cols]
+wastewater_sample_antibiotic_conc <- wastewater_sample_antibiotic_conc[!is.na(sample_no) & !duplicated(sample_no)]
+
+# Separate ARG copy numbers into a separate dataframe
+arg_copy_cols <- c(ww_id_cols, grep('(^abs)|(^rlt)', names(wastewater_sample_rawdata), value = TRUE))
+
+# Again, get rid of the duplicated rows
+wastewater_sample_arg_copynum <- wastewater_sample_rawdata[, ..arg_copy_cols]
+wastewater_sample_arg_copynum <- wastewater_sample_arg_copynum[!is.na(sample_no) & !duplicated(sample_no)]
+
+# Separate beta-lactamase into a separate dataframe
+bl_cols <- c(ww_id_cols, grep('^Bl_', names(water_sample_rawdata), value = TRUE), 'ESBL', 'CRE')
+wastewater_sample_bl <- wastewater_sample_rawdata[, ..bl_cols]
+
+# Here, we may have multiple rows per sample so fill in the id columns down for those samples, then convert - and + to 0 and 1.
+wastewater_sample_bl[, (ww_id_cols) := lapply(.SD, na.locf), .SDcols = ww_id_cols]
+pres_abs_cols <- bl_cols[!bl_cols %in% c(ww_id_cols, 'Bl_species')]
+wastewater_sample_bl[, (pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = pres_abs_cols]
+
+# Separate AR bacteria (E.coli, Salmonella, and MDR Enterococcus) into a separate dataframe
+ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(wastewater_sample_rawdata), value = TRUE), grep('^Salmonella', names(wastewater_sample_rawdata), value = TRUE), grep('^Enterococcus', names(wastewater_sample_rawdata), value = TRUE))
+ar_cols <- c(ww_id_cols, ar_pres_abs_cols)
+wastewater_sample_ar <- wastewater_sample_rawdata[, ..ar_cols]
+
+# Again, fill in the ID columns down for any samples with multiple rows, then convert - and + to 0 and 1.
+wastewater_sample_ar[, (ww_id_cols) := lapply(.SD, na.locf), .SDcols = ww_id_cols]
+wastewater_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = ar_pres_abs_cols]
+
+```
 
 
+Save all the processed data frames to CSV files.
+
+```{r, eval = FALSE}
+save_objs <- c("wastewater_sample_antibiotic_conc", 
+"wastewater_sample_ar", "wastewater_sample_arg_copynum", "wastewater_sample_bl", 
+"wastewater_sample_ecolicounts", 
+"water_sample_antibiotic_conc", "water_sample_ar", "water_sample_arg_copynum", 
+"water_sample_bl", "water_sample_environmental")
+
+lapply(save_objs, function(x) fwrite(get(x), file.path('project/csv', paste0(x, '.csv'))))
 ```
 
