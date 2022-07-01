@@ -38,12 +38,17 @@ library(data.table)
 library(stringr)
 library(zoo)
 library(ggplot2)
+library(lme4)
+library(emmeans)
+library(brms)
 
 theme_set(
   theme_bw() +
     theme(strip.background = element_blank(),
           panel.grid = element_blank())
 )
+
+options(mc.cores = 4, brms.backend = 'cmdstanr', brms.file_refit = 'on_change')
 ```
 
 First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. Also get the smaller HUC12 watershed boundaries that are contained within the single boundary of the Upper Oconee. (Note: this portion of the code is not run when the notebook is created.)
@@ -290,7 +295,7 @@ The environmental variables may vary over time and space. Let's make some maps o
 ```{r}
 sites_env <- full_join(sites, w_env)
 
-watersheds_proj <- st_transform(watersheds, crs = 26966)
+watersheds_proj <- st_transform(watersheds, crs = 26966) # Projection suitable for GA
 ```
 
 Temperature appears to be higher in the SE part of the study area in summer. There is a very high temperature value in the winter -- might this be an error?
@@ -365,21 +370,22 @@ w_env_ar[, season := factor(season, levels = season_order)]
 Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences of AR *E. coli* and *Enterococcus* are relatively small so there is not very much basis to detect a trend. However for *Salmonella*  we see all but 1 of the 11 presences were from the fall. The majority of ESBL was observed in the winter, and CRE in the summer.
 
 ```{r, echo = FALSE}
-w_ar_pres_abs <- melt(w_env_ar, id.vars = w_id_cols, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon')
+w_ar_pres_abs <- melt(w_env_ar, id.vars = w_id_cols, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
 w_ar_pres_abs[, taxon := gsub('_presence', '', taxon)]
-w_ar_pres_abs_total <- w_ar_pres_abs[, .N, by = .(season, taxon, value)]
-w_ar_pres_abs_total[, present := factor(value, labels = c('absent', 'present'))]
+w_ar_pres_abs_total <- w_ar_pres_abs[, .N, by = .(season, taxon, present)]
+w_ar_pres_abs_total[, present := factor(present, labels = c('absent', 'present'))]
 
-ggplot(w_ar_pres_abs_total[!is.na(value)], aes(x = season, y = N, fill = present)) +
+ggplot(w_ar_pres_abs_total[!is.na(present)], aes(x = season, y = N, fill = present)) +
   geom_col(position = 'stack') +
   facet_wrap(~ taxon) +
   scale_fill_brewer(palette = 'Oranges') +
-  scale_y_continuous(expand = c(0, 0))
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(legend.position = c(0.85, 0.25))
 ```
 
 FIXME: PUT MORE PLOTS AND MAPS HERE
 
-Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by giving each season a random intercept). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
+Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by adding an additional categorical fixed effect for season to the model). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
 
 ```{r}
 # Take log of E.coli counts and then scale all predictors.
@@ -391,12 +397,47 @@ w_env_ar_model_data <- cbind(
   w_env_ar[, .(sample_no, season, site, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)],
   scaled_predictors)
 
-library(lme4)
-
-ESBL_mod <- glmer(ESBL ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
-CRE_mod <- glmer(CRE ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
-Enter_mod <- glmer(Enterococcus_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
-Salm_mod <- glmer(Salmonella_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
-AREc_mod <- glmer(AR_Ecoli_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + (1|season) + (1|site), data = w_env_ar_model_data)
+ESBL_mod <- glmer(ESBL ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
+CRE_mod <- glmer(CRE ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
+Enter_mod <- glmer(Enterococcus_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
+Salm_mod <- glmer(Salmonella_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
+AREc_mod <- glmer(AR_Ecoli_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
 ```
 
+The above models are OK but have some drawbacks. First, they are all separate models and do not account for the relationships between the different AR taxa, nor do they account for the "multiple comparisons" issue where we are testing the same predictors over and over to see if they affect different response variables. Second, several of the models result in singular fits. This means the data do not permit a good estimation of the random effects, so the maximum likelihood algorithm just "gives up" and calls all the random effects (site effects) zero. This is not ideal.
+
+A superior way to do this would be to fit a MGLMM (multivariate generalized linear mixed model) where we fit the presence/absence of all five AR taxa as the response variable, which will account for the interactions between them, as well as accounting for the multiple comparisons reasonably well. The classical or frequentist statistical tools we have available are not up to this task. Luckily we have a trick up our sleeve and we can use a Bayesian approach to set up this model with prior distributions on the different parameters and then sample from the posterior.
+
+I am following [the suggestion in this forum post](https://discourse.mc-stan.org/t/multivariate-glm-in-brms/11930/5) to convert the data to long form and include taxon as another effect in the model which can interact with the other predictors. After compilation, the model samples in about 10 seconds on my laptop and converges well.
+
+```{r}
+w_env_ar_long <- melt(w_env_ar_model_data, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
+w_env_ar_long[, taxon := gsub('_presence', '', taxon)]
+
+mv_ar_fit <- brm(
+  bf(present ~  taxon + temperature + pH + conductivity + turbidity + Ecoli_counts + season + taxon:temperature + taxon:pH + taxon:conductivity + taxon:turbidity + taxon:Ecoli_counts + taxon:season + (1|site)), 
+  data = w_env_ar_long, family = bernoulli,
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 2000, warmup = 1000, seed = 7122,
+  file = 'project/mv_ar_fit'
+)
+```
+
+Quick convergence diagnostic: what is the maximum R-hat statistic? If it is close to 1 (<1.01) the model has converged. Yes, it's good enough to say the model has converged on a solution and we can make inferences based on its output.
+
+```{r}
+max(rhat(mv_ar_fit))
+```
+
+Quick diagnostic to see if the model fits the data well: a posterior predictive check plot. If the thin blue lines (samples from the posterior distribution) match the thick black line (the data), it does. The eyeball test says: yes, it is a good fit.
+
+```{r}
+pp_check(mv_ar_fit)
+```
+
+
+Now that we have this model and know that it has converged and is a good fit, we can play with the output and make whatever inference we want. The most interesting things to plot will be the parameter estimates on the interaction terms, and interaction plots showing a line for the probability of presence of each taxon, compared with a particular environmental factor. Note: the model doesn't account for any multi-way interactions between environmental predictors, for instance between taxon, temperature and pH. Those kind of interactions could be included, at the cost of having a really complicated model.
+
+Generally, my take here is that the fitted trends are very "noisy." This means there is a lot of variability in presence-absence relative to the different environmental factors, and there is no really strong signal of an environmental relationship that rises above the noise in most cases. However in some cases there is weak evidence for a relationship.
