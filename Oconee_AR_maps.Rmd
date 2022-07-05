@@ -42,6 +42,9 @@ library(lme4)
 library(emmeans)
 library(brms)
 library(tidybayes)
+library(brmsmargins)
+library(gt)
+library(glue)
 
 theme_set(
   theme_bw() +
@@ -293,12 +296,23 @@ w_env[temperature >= 32, temperature := NA]
 
 ### Maps of environmental variables
 
-The environmental variables may vary over time and space. Let's make some maps of these variables (potential predictor variables) to see how they might vary.
+The environmental variables may vary over time and space. Let's make some maps of these variables (potential predictor variables) to see how they might vary. Join the spatial and environmental data together.
 
 ```{r}
 sites_env <- full_join(sites, w_env)
 
 watersheds_proj <- st_transform(watersheds, crs = 26966) # Projection suitable for GA
+```
+
+Join AR presence absence data with environmental data. Reshape the data to long form for use later in model fitting.
+
+```{r}
+w_env_ar <- w_env[w_ar, on = w_id_cols]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_ar[, season := factor(season, levels = season_order)]
+
+w_ar_pres_abs <- melt(w_env_ar, id.vars = c(w_id_cols, 'temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts'), measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence', 'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
+w_ar_pres_abs[, taxon := gsub('_presence', '', taxon)]
 ```
 
 Temperature appears to be higher in the SE part of the study area in summer. (High winter temperature measurement was removed.)
@@ -362,20 +376,9 @@ ggplot() +
 
 ### E. coli counts, environmental variables, and presence of AR taxa
 
-Join AR presence absence data with environmental data. 
-
-```{r}
-w_env_ar <- w_env[w_ar, on = w_id_cols]
-season_order <- c('fall', 'winter', 'spring', 'summer')
-w_env_ar[, season := factor(season, levels = season_order)]
-```
-
 Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences of AR *E. coli* and *Enterococcus* are relatively small so there is not very much basis to detect a trend. However for *Salmonella*  we see all but 1 of the 11 presences were from the fall. The majority of ESBL was observed in the winter, and CRE in the summer.
 
 ```{r, echo = FALSE}
-w_ar_pres_abs <- melt(w_env_ar, id.vars = c(w_id_cols, 'temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts'), measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence', 'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
-w_ar_pres_abs[, taxon := gsub('_presence', '', taxon)]
-
 orange_scale <- scale_fill_brewer(palette = 'Oranges', name = 'presence', labels = c('absent', 'present')) 
 y_scale <- scale_y_continuous(expand = expansion(mult = c(0, 0.01)))
 lpos <- theme(legend.position = c(0.85, 0.25))
@@ -508,13 +511,53 @@ An important point to note is that this is a Bayesian analysis, so we are moving
 
 OK, so now that I have the philosophical stuff out of the way, let's look at the results. First, I will show plots of the fitted posterior estimated value of the trend, with the 66% and 95% credible intervals, for each combination of taxon and predictor variable. The log-transformed and standardized predictors are transformed back to their original scale, and the response variable is transformed to a probability scale ranging from 0 to 1.
 
-```{r}
+It's important to note that these are *marginal effect* plots, in other words the effect of each individual predictor variable holding all the other ones constant at their average value. This also means averaging over all sites and all seasons' trends.
 
+```{r, echo = FALSE}
+scaled_centers <- attr(scaled_predictors, 'scaled:center')
+scaled_scales <- attr(scaled_predictors, 'scaled:scale')
+
+### Define function to construct marginal effect plots
+plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE) {
+  x_range <- range(w_env_ar_long[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
+  x_r_seq_backtransformed <- scaled_scales[variable] * temp_r_seq + scaled_centers[variable]
+    if (backtransform_log) {
+    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
+    x_scale_trans <- 'log1p'
+    } else {
+    x_scale_trans <- 'identity'
+  }
+  
+  pred_names <- c(variable, 'taxon')
+  pred_dat <- expand.grid(x = x_r_seq, taxon = unique(w_env_ar_long$taxon)) |> setNames(pred_names)
+  pred_dat_backtransformed <- expand.grid(x = x_r_seq_backtransformed, taxon = unique(w_env_ar_long$taxon)) 
+  
+
+  marginal_draws <- brmsmargins(mv_ar_fit, at = pred_dat)
+  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
+  
+  ggplot(marginal_summ, aes(x = x, y = q0.5, color = taxon, fill = taxon)) + 
+    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), alpha = 0.3, color = NA) + 
+    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), alpha = 0.3, color = NA) + 
+    geom_line(size = 0.8) + 
+    facet_wrap(~ taxon) +
+    theme(legend.position = 'none') +
+    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
+    scale_x_continuous(name = variable, trans = x_scale_trans) +
+    labs(y = 'modeled probability of presence')
+}
+
+plot_marginal_effect(variable = 'temperature')
+plot_marginal_effect(variable = 'pH')
+plot_marginal_effect(variable = 'turbidity', backtransform_log = TRUE)
+plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE)
+plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE)
 ```
 
-Now to make inferences based on those trends we can eyeball from the plots, let's estimate the marginal trends for each combination of taxon and predictor variable.
+Now to make inferences based on those trends we can eyeball from the plots, let's estimate the marginal trends for each combination of taxon and predictor variable. These are displayed in both plot and table form.
 
-```{r}
+```{r, echo = FALSE}
 plot_emtrends <- function(variable) {
   trends <- emtrends(mv_ar_fit, ~ taxon, var = variable)
   trend_draws <- gather_emmeans_draws(trends)
@@ -540,5 +583,26 @@ season_mean_draws <- gather_emmeans_draws(season_means) %>%
 ggplot(season_mean_draws, aes(x = season, y = p)) +
   stat_pointinterval() +
   facet_wrap(~ taxon, scales = 'free_y')
+```
+
+```{r, echo = FALSE}
+print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
+
+table_emtrends <- function(variable) {
+  trends <- emtrends(mv_ar_fit, ~ taxon, var = variable)
+  trend_quants <- Rutilitybelt::emm_quantile(trends)
+  trend_quants %>%
+    mutate(estimate = signif(q0.5, 3), ci99 = print_ci(q0.005, q0.995), ci95 = print_ci(q0.025, q0.975), ci90 = print_ci(q0.05, q0.95), ci66 = print_ci(q0.17, q0.83)) %>%
+    select(taxon, estimate, ci99, ci95, ci90, ci66) %>%
+    gt(caption = glue('Estimated marginal trends for {variable}')) %>%
+    cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+    tab_options(column_labels.font.weight = 'bold')
+}
+
+table_emtrends(variable = 'temperature')
+table_emtrends(variable = 'pH')
+table_emtrends(variable = 'turbidity')
+table_emtrends(variable = 'conductivity')
+table_emtrends(variable = 'Ecoli_counts')
 ```
 
