@@ -1,15 +1,25 @@
 ---
-title: "Upper Oconee AR maps"
+title: "Upper Oconee AR maps and analysis"
 author: "Quentin D. Read"
 date: "`r Sys.Date()`"
-output: html_document
+output: 
+  html_document:
+      css: "gtstyle.css"
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
-Here I am going to plot some of the Upper Oconee AR data on maps, and generate some basic spatial statistics, to see if there is any spatial pattern in the data. The goal here is to do some exploratory data analysis before trying to put things into a formal statistical model.
+## Summary
+
+In this document, I put together the Upper Oconee data and got some external data to make maps. I also made some exploratory data analysis plots and then fit a formal statistical model. All of this focuses on Question 1 from your original list of research questions: do environmental factors influence the presence and absence of antibiotic resistant taxa? Basically, the answers are not that different from the analysis that the UGA statistician did, which is a great thing (it means the results are robust and patterns tend to come through regardless of what analysis is used) but on the other hand I also think there is now much more nuance.
+
+I suppressed the display of some of the code but I kept some of the more important code displayed in here so that you can see what I did.
+
+Note: I now use a model that accounts for the non-independence of observations from the same site and from the same time. However I did not actually incorporate the spatial locations of the sites into the model explicitly. I don't think that is worth the additional effort it would take, and is unlikely to show anything new. So the question moving forward is what to do next. I should hopefully ultimately have time to put this same approach toward the other parts of your research questions beyond Question 1, but I wanted to share this with you all first to get your opinion.
+
+OK, let's get to it.
 
 ## Processing the spatial data
 
@@ -109,9 +119,9 @@ Next, read the raw data in and convert it to a form usable for analysis and mapp
 - Distinguish rows where species is `-` from rows where there is no data.
 - Create separate datasets for environmental covariates, lactamase presence-absence, antibiotic concentrations, and ARG absolute and relative copy numbers that can be joined together later.
 
-Some code here was copied from the UGA statistician's code. While looking at the UGA statistician's code I noticed that they removed any isolate beyond the first from the dataset from each sample. So that is probably not good. I have corrected this.
+Some code here was copied from the UGA statistician's code. While looking at the UGA statistician's code I noticed that they removed any isolate beyond the first from the dataset from each sample. So that is probably not good. I have corrected this. (Code not shown here as it is very long.)
 
-```{r, eval = FALSE}
+```{r, eval = FALSE, echo = FALSE}
 water_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'water samples', skip = 7) |> setDT()
 wastewater_sample_rawdata <- read_xlsx('project/AR paper_stat analysis_tables.xlsx', sheet = 'wastewater samples', skip = 6) |> setDT()
 
@@ -183,9 +193,7 @@ water_sample_ar[, (id_cols) := lapply(.SD, na.locf), .SDcols = id_cols]
 water_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = ar_pres_abs_cols]
 ```
 
-Do similar processing for the wastewater samples tab. Again borrow the corrected names code from the UGA statistician and modify.
-
-```{r, eval = FALSE}
+```{r, eval = FALSE, echo = FALSE}
 correct_names_wastewater = c("sample_no", 'season', 'site', 'Ecoli_counts',
                              'Bl_species',
                              'Bl_Amp','Bl_Faz','Bl_Fep','Bl_Fot','Bl_Fox','Bl_Pod','Bl_Taz','Bl_Axo','Bl_Cep','Bl_Cip','Bl_Gen','Bl_Imi','Bl_P_T4','Bl_Mer',
@@ -254,10 +262,7 @@ wastewater_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(
 
 ```
 
-
-Save all the processed data frames to CSV files.
-
-```{r, eval = FALSE}
+```{r, eval = FALSE, echo = FALSE}
 save_objs <- c("wastewater_sample_antibiotic_conc", 
 "wastewater_sample_ar", "wastewater_sample_arg_copynum", "wastewater_sample_bl", 
 "wastewater_sample_ecolicounts", 
@@ -446,10 +451,19 @@ ggplot(w_ar_pres_abs[!is.na(present) & !is.na(Ecoli_counts)], aes(x = cut(Ecoli_
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
 ```
 
+## Statistical model
+
 Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by adding an additional categorical fixed effect for season to the model). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
 
+At first, I thought about using `glmer()` to fit a generalized linear mixed model (GLMM) to each taxon separately. However I decided not to do this. First, those all would be separate models and do not account for the relationships between the different AR taxa, nor do they account for the "multiple comparisons" issue where we are testing the same predictors over and over to see if they affect different response variables. Second, several of the models result in singular fits. This means the data do not permit a good estimation of the random effects, so the maximum likelihood algorithm just "gives up" and calls all the random effects (site effects) zero. This is not ideal.
+
+A superior way to do this is to fit a MGLMM (multivariate generalized linear mixed model) where we fit the presence/absence of all five AR taxa as the response variable, which will account for the interactions between them, as well as accounting for the multiple comparisons reasonably well. The classical or frequentist statistical tools we have available are not up to this task. Luckily we have a trick up our sleeve and we can use a Bayesian approach to set up this model with prior distributions on the different parameters and then sample from the posterior.
+
+### Prepare the data
+
+This takes the log+1 transformation for some of the predictors and then standardizes all of them which is a good practice for a multiple regression. Then the data is converted to a long form. I am following [the suggestion in this forum post](https://discourse.mc-stan.org/t/multivariate-glm-in-brms/11930/5) to convert the data to long form and include the interactions between taxon and the other predictors.
+
 ```{r}
-# Take log of E.coli counts and then scale all predictors.
 scaled_predictors <- w_env_ar[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
 scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
 scaled_predictors[, conductivity := log1p(conductivity)]
@@ -460,23 +474,15 @@ w_env_ar_model_data <- cbind(
   w_env_ar[, .(sample_no, season, site, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)],
   scaled_predictors)
 
-# ESBL_mod <- glmer(ESBL ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
-# CRE_mod <- glmer(CRE ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
-# Enter_mod <- glmer(Enterococcus_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
-# Salm_mod <- glmer(Salmonella_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
-# AREc_mod <- glmer(AR_Ecoli_presence ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site), data = w_env_ar_model_data)
-```
-
-At first, I thought about using `glmer()` to fit a generalized linear mixed model (GLMM) to each taxon separately. As you can see above I ultimately decided to comment those lines out and not run them. Those models are OK but have some drawbacks. First, they are all separate models and do not account for the relationships between the different AR taxa, nor do they account for the "multiple comparisons" issue where we are testing the same predictors over and over to see if they affect different response variables. Second, several of the models result in singular fits. This means the data do not permit a good estimation of the random effects, so the maximum likelihood algorithm just "gives up" and calls all the random effects (site effects) zero. This is not ideal.
-
-A superior way to do this would be to fit a MGLMM (multivariate generalized linear mixed model) where we fit the presence/absence of all five AR taxa as the response variable, which will account for the interactions between them, as well as accounting for the multiple comparisons reasonably well. The classical or frequentist statistical tools we have available are not up to this task. Luckily we have a trick up our sleeve and we can use a Bayesian approach to set up this model with prior distributions on the different parameters and then sample from the posterior.
-
-I am following [the suggestion in this forum post](https://discourse.mc-stan.org/t/multivariate-glm-in-brms/11930/5) to convert the data to long form and include the interactions between taxon and the other predictors. The random effects are site and taxon nested within site. After compilation, the model samples in about 30 seconds on my laptop and converges well.
-
-```{r}
 w_env_ar_long <- melt(w_env_ar_model_data, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
 w_env_ar_long[, taxon := gsub('_presence', '', taxon)]
+```
 
+### Fit the model
+
+The fixed effects are the environmental predictors (including season) and the interaction between taxon and each predictor. The random effects are site and taxon nested within site. After compilation, the model samples in about 30 seconds on my laptop and converges well. Priors are included on the fixed effects to make plausible values more likely which helps the model converge.
+
+```{r}
 mv_ar_fit <- brm(
   bf(present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + taxon:temperature + taxon:pH + taxon:conductivity + taxon:turbidity + taxon:Ecoli_counts + taxon:season + (1|site) + (1|taxon:site)), 
   data = w_env_ar_long, family = bernoulli,
@@ -500,6 +506,7 @@ Quick diagnostic to see if the model fits the data well: a posterior predictive 
 pp_check(mv_ar_fit)
 ```
 
+## Examine model output
 
 Now that we have this model and know that it has converged and is a good fit, we can play with the output and make whatever inference we want. The most interesting things to plot will be the parameter estimates on the interaction terms, and interaction plots showing a line for the probability of presence of each taxon, compared with a particular environmental factor. Note: the model doesn't account for any multi-way interactions between environmental predictors, for instance between taxon, temperature and pH. Those kind of interactions could be included, at the cost of having a really complicated model.
 
@@ -508,6 +515,8 @@ Generally, my take here is that the fitted trends are very "noisy." This means t
 My basic procedure here for looking at model results and making inference will be to plot the conditional effects for each environmental predictor by taxon. That will show the trend of how much each environmental variable predicts the probability of presence of each taxon, while holding all other predictors at their average values. I will plot the median of the posterior as the point estimate of effect size, and the 66% and 95% credible intervals (roughly +/-1 and +/-2 standard deviations, respectively).
 
 An important point to note is that this is a Bayesian analysis, so we are moving away from the binary paradigm of statistical significance (question: Is there an effect of X on Y, yes or no?) and toward a paradigm of estimating *effect sizes* and their distributions (question: How big of an effect is there of X on Y, and how uncertain is our estimate of it?) In my opinion this is a better way to think about evidence because there is no such thing as yes or no, black and white answers in reality.
+
+### Marginal effect trend plots
 
 OK, so now that I have the philosophical stuff out of the way, let's look at the results. First, I will show plots of the fitted posterior estimated value of the trend, with the 66% and 95% credible intervals, for each combination of taxon and predictor variable. The log-transformed and standardized predictors are transformed back to their original scale, and the response variable is transformed to a probability scale ranging from 0 to 1.
 
@@ -518,10 +527,10 @@ scaled_centers <- attr(scaled_predictors, 'scaled:center')
 scaled_scales <- attr(scaled_predictors, 'scaled:scale')
 
 ### Define function to construct marginal effect plots
-plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE) {
+plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE, breaks_x) {
   x_range <- range(w_env_ar_long[[variable]], na.rm = TRUE)
   x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
-  x_r_seq_backtransformed <- scaled_scales[variable] * temp_r_seq + scaled_centers[variable]
+  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
     if (backtransform_log) {
     x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
     x_scale_trans <- 'log1p'
@@ -544,18 +553,44 @@ plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE) 
     facet_wrap(~ taxon) +
     theme(legend.position = 'none') +
     scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
-    scale_x_continuous(name = variable, trans = x_scale_trans) +
+    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = breaks_x) +
     labs(y = 'modeled probability of presence')
 }
-
-plot_marginal_effect(variable = 'temperature')
-plot_marginal_effect(variable = 'pH')
-plot_marginal_effect(variable = 'turbidity', backtransform_log = TRUE)
-plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE)
-plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE)
 ```
 
-Now to make inferences based on those trends we can eyeball from the plots, let's estimate the marginal trends for each combination of taxon and predictor variable. These are displayed in both plot and table form.
+The temperature trends plot shows fairly strong evidence that antibiotic-resistant *Salmonella* is more likely to be present at lower temperatures and almost completely absent at high water temperature. A similar but much weaker trend may exist for ESBL but the uncertainty is very high. The other AR taxa show no evidence for any response to temperature.
+
+```{r, echo = FALSE}
+plot_marginal_effect(variable = 'temperature', breaks_x = c(5, 10, 15, 20, 25))
+```
+
+The pH trends plot shows that antibiotic-resistant *E. coli* may be more likely to be present in lower-pH water samples although this is a fairly weak trend and the uncertainty is high. I would say none of the other taxa show any evidence for a pH response.
+
+```{r, echo = FALSE}
+plot_marginal_effect(variable = 'pH', breaks_x = c(6.5, 7, 7.5))
+```
+
+Turbidity does not show much of a response for any of the taxa, except possibly there is weak evidence that CRE is more likely to be present in more turbid water samples.
+
+```{r, echo = FALSE}
+plot_marginal_effect(variable = 'turbidity', backtransform_log = TRUE, breaks_x = c(0, 3, 10, 30))
+```
+
+The signal is weak and uncertainty high for conductivity response so I would not say there is much evidence for any response.
+
+```{r, echo = FALSE}
+plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE, breaks_x = c(30, 100, 300))
+```
+
+The presence of antibiotic-resistant *E. coli* is predicted fairly strongly by the *E. coli* counts in the water sample which is not surprising. However the other taxa do not show any evidence that they respond to that.
+
+```{r, echo = FALSE}
+plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks_x = c(0, 30, 100, 300, 3000))
+```
+
+### Trend effect size plots
+
+Now to make inferences based on those trends we can eyeball from the plots, let's estimate the marginal trend effect sizes (i.e. slopes) for each combination of taxon and predictor variable. These are displayed in both plot and table form. On the plot, the large point is the median estimate, the thick error bar is the 66% credible interval (about 1 standard deviation), and the thin error bar is the 95% credible interval (about 2 standard deviations).
 
 ```{r, echo = FALSE}
 plot_emtrends <- function(variable) {
@@ -569,21 +604,55 @@ plot_emtrends <- function(variable) {
     ggtitle(paste(variable, 'trends by AR taxon')) +
     theme(axis.title.y = element_blank())
 }
+```
 
+The temperature effect size plot confirms what we saw above, that *Salmonella* has a negative relationship so is more likely to be present in colder water samples, ESBL is maybe weakly associated with colder water but I would call it very weak evidence, and the other taxa are not.
+
+```{r, echo = FALSE}
 plot_emtrends(variable = 'temperature')
-plot_emtrends(variable = 'pH')
-plot_emtrends(variable = 'turbidity')
-plot_emtrends(variable = 'conductivity')
-plot_emtrends(variable = 'Ecoli_counts')
+```
 
+The pH effect size plot confirms there is decent evidence that AR *E. coli* is more likely to be present in more acidic water samples but other taxa are not responsive to pH.
+
+```{r, echo = FALSE}
+plot_emtrends(variable = 'pH')
+```
+
+The turbidity plot confirms most taxa do not change their probability of presence with changes in turbidity. The positive trend in CRE overlaps zero at 95% confidence by a large amount so is probably too weak of evidence to say much about.
+
+```{r, echo = FALSE}
+plot_emtrends(variable = 'turbidity')
+```
+
+The effect size plot for conductivity shows little response for any taxon.
+
+```{r, echo = FALSE}
+plot_emtrends(variable = 'conductivity')
+```
+
+The *E. coli* counts effect size plot confirms the positive response of probability of AR *E. coli* response to total *E. coli* and also confirms no other taxa's probability is predicted by that.
+
+```{r, echo = FALSE}
+plot_emtrends(variable = 'Ecoli_counts')
+```
+
+I also made a plot for each season separately. The uncertainty is very high for some of the taxa that are not present at all for a particular season, or only have one or two presences for that season. We can see that there are differences for some of the taxa for some of the seasons, notably ESBL is more likely to be present in winter than fall, and *Salmonella* more likely in fall than winter, however there is very high uncertainty in all the other taxa because of the low number of presences overall making it hard to fit the model.
+
+```{r, echo = FALSE}
 season_means <- emmeans(mv_ar_fit, ~ taxon + season, type = 'response')
 season_mean_draws <- gather_emmeans_draws(season_means) %>%
   mutate(p = plogis(.value))
 
 ggplot(season_mean_draws, aes(x = season, y = p)) +
   stat_pointinterval() +
-  facet_wrap(~ taxon, scales = 'free_y')
+  facet_wrap(~ taxon, scales = 'free_y') +
+  labs(y = 'modeled probability of presence') +
+  ggtitle('Marginal means for each season by AR taxon')
 ```
+
+### Marginal trend effect size tables
+
+Below is the same information from the effect size plots above, but in table form. Medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided. This emphasizes that 95% is not the only important one to look at although "traditionally" it is the only one reported in manuscripts.
 
 ```{r, echo = FALSE}
 print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
@@ -604,5 +673,19 @@ table_emtrends(variable = 'pH')
 table_emtrends(variable = 'turbidity')
 table_emtrends(variable = 'conductivity')
 table_emtrends(variable = 'Ecoli_counts')
+
+Rutilitybelt::emm_quantile(season_means) %>%
+  arrange(season, taxon) %>%
+  mutate(across(starts_with('q'), plogis)) %>%
+  mutate(estimate = glue('{signif(q0.5, 3)}'), ci99 = print_ci(q0.005, q0.995), ci95 = print_ci(q0.025, q0.975), ci90 = print_ci(q0.05, q0.95), ci66 = print_ci(q0.17, q0.83)) %>%
+  select(taxon, season, estimate, ci99, ci95, ci90, ci66) %>%
+  group_by(taxon) %>%
+  gt(caption = glue('Estimated marginal means by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(
+    row_group.background.color = "#D4EBF2",
+    row_group.font.weight = 'bold',
+    column_labels.font.weight = 'bold'
+  )
 ```
 
