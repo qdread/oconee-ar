@@ -579,13 +579,13 @@ plot_marginal_effect(variable = 'turbidity', backtransform_log = TRUE, breaks_x 
 The signal is weak and uncertainty high for conductivity response so I would not say there is much evidence for any response.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE, breaks_x = c(30, 100, 300))
+plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE, breaks_x = c(50, 100, 500))
 ```
 
 The presence of antibiotic-resistant *E. coli* is predicted fairly strongly by the *E. coli* counts in the water sample which is not surprising. However the other taxa do not show any evidence that they respond to that.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks_x = c(0, 30, 100, 300, 3000))
+plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks_x = c(3, 10, 30, 100, 300, 3000))
 ```
 
 ### Trend effect size plots
