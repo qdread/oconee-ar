@@ -1,8 +1,6 @@
 
 # Load pkgs and data (from orig Rmd) --------------------------------------
 
-
-
 library(sf)
 library(readxl)
 library(dplyr)
@@ -67,31 +65,49 @@ table(w_env_bl$Bl_species, useNA = "always") # Some have a - and some are empty.
 w_env_bl <- w_env_bl[!Bl_species %in% '']
 w_env_bl[Bl_species == '-', Bl_species := 'none']
 w_env_bl[, Bl_species := relevel(factor(Bl_species), ref = 'none')]
-w_env_bl[, Bl_present := Bl_species != 'none']
+
+# Put together the data for the present absent regression
+env_cols <- c('temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts')
+w_env_bl_presabs <- w_env_bl[, .(Bl_present = any(Bl_species != 'none')), by = c(w_id_cols, env_cols)]
 
 # Scale the predictors as done previously
-scaled_predictors <- w_env_bl[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
-scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
-scaled_predictors[, conductivity := log1p(conductivity)]
-scaled_predictors[, turbidity := log1p(turbidity)]
-scaled_predictors <- scale(scaled_predictors)
+bl_presabs_scaled_predictors <- w_env_bl_presabs[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+bl_presabs_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+bl_presabs_scaled_predictors[, conductivity := log1p(conductivity)]
+bl_presabs_scaled_predictors[, turbidity := log1p(turbidity)]
+bl_presabs_scaled_predictors <- scale(bl_presabs_scaled_predictors)
 
-w_env_bl_model_data <- cbind(
-  w_env_bl[, .(sample_no, season, site, Bl_present)],
-  scaled_predictors)
+bl_presabs_model_data <- cbind(
+  w_env_bl_presabs[, .(sample_no, season, site, Bl_present)],
+  bl_presabs_scaled_predictors)
+
+# Put together the data for the categorical regression
+bl_cat_scaled_predictors <- w_env_bl[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+bl_cat_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+bl_cat_scaled_predictors[, conductivity := log1p(conductivity)]
+bl_cat_scaled_predictors[, turbidity := log1p(turbidity)]
+bl_cat_scaled_predictors <- scale(bl_cat_scaled_predictors)
+
+bl_cat_model_data <- cbind(
+  w_env_bl[, .(sample_no, season, site, Bl_species)],
+  bl_cat_scaled_predictors)
+bl_cat_model_data[, sample_no := factor(sample_no)]
 
 # One-hot encoding for the Bl_species column for the multinomial model
-Bl_species_matrix <- dcast(w_env_bl[, .(sample_no, Bl_species)], sample_no ~ Bl_species, length)
-Bl_species_matrix[, sample_no := NULL]
+Bl_species_matrix <- data.table(ID = 1:nrow(w_env_bl), sp = w_env_bl$Bl_species) |>
+  dcast(ID ~ sp, length)
+Bl_species_matrix[, ID := NULL]
 w_env_bl_model_data[, Bl_species := do.call(cbind, Bl_species_matrix)]
 
 # It will be very difficult to predict Klebsiella, Enterobacter, and probably E.coli, because there are few of each.
 # First, let's simplify to a binomial or logistic regression. (any present vs. any absent). Bernoulli is used.
-# But otherwise, as done by the UGA statistician, a multinomial regression is appropriate
+# But otherwise, as done by the UGA statistician, a categorical or softmax regression is appropriate
+# For the categorical, we will sometimes have more than one taxon present from the same sample number
+# This can either be ignored or we can add a random effect for sample number if the data supports it.
 
 bl_bern_fit <- brm(
   bf(Bl_present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = w_env_bl_model_data, family = bernoulli(link = 'logit'),
+  data = bl_presabs_model_data, family = bernoulli(link = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
@@ -99,14 +115,14 @@ bl_bern_fit <- brm(
   file = 'project/bl_bern_fit'
 )
 
-bl_mult_fit <- brm(
-  bf(Bl_species_matrix | 1 ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = w_env_bl_model_data, data2 = Bl_species_matrix, family = multinomial(link = 'logit'),
+bl_cat_fit <- brm(
+  bf(Bl_species | 1 ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site) + (1|sample_no)), 
+  data = bl_cat_model_data, family = categorical(link = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
   chains = 4, iter = 3000, warmup = 2000, seed = 71322,
-  file = 'project/bl_mult_fit'
+  file = 'project/bl_cat_fit'
 )
 
 # FIXME Extract some results.
@@ -116,9 +132,6 @@ bl_mult_fit <- brm(
 w_env_ant_conc <- w_env[w_antibiotic_conc, on = w_id_cols]
 season_order <- c('fall', 'winter', 'spring', 'summer')
 w_env_ant_conc[, season := factor(season, levels = season_order)]
-
-w_ar_pres_abs <- melt(w_env_ar, id.vars = c(w_id_cols, 'temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts'), measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence', 'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
-w_ar_pres_abs[, taxon := gsub('_presence', '', taxon)]
 
 # Visualize distributions of the different antibiotics, ignoring predictors.
 
@@ -135,21 +148,30 @@ ggplot(w_env_ant_conc_long, aes(x = concentration)) +
 ggplot(w_env_ant_conc, aes(x = total)) +
   geom_density() 
 
-# FIXME SCALE PREDICTORS
+# Scale predictors
+antconc_scaled_predictors <- w_env_ant_conc[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+antconc_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+antconc_scaled_predictors[, conductivity := log1p(conductivity)]
+antconc_scaled_predictors[, turbidity := log1p(turbidity)]
+antconc_scaled_predictors <- scale(antconc_scaled_predictors)
+
+antconc_model_data <- cbind(
+  w_env_ant_conc[, .(sample_no, season, site, total)],
+  antconc_scaled_predictors)
+
 ant_conc_hugamma_fit <- brm(
   bf(total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = w_env_ant_conc, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  data = antconc_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
   chains = 4, iter = 3000, warmup = 2000, seed = 70922,
-  control = list(adapt_delta = 0.95)
   file = 'project/ant_conc_hugamma_fit'
 )
 
 ant_conc_hulognorm_fit <- brm(
   bf(total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = w_env_ant_conc, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  data = antconc_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
