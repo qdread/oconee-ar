@@ -69,20 +69,47 @@ w_env_bl[Bl_species == '-', Bl_species := 'none']
 w_env_bl[, Bl_species := relevel(factor(Bl_species), ref = 'none')]
 w_env_bl[, Bl_present := Bl_species != 'none']
 
+# Scale the predictors as done previously
+scaled_predictors <- w_env_bl[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+scaled_predictors[, conductivity := log1p(conductivity)]
+scaled_predictors[, turbidity := log1p(turbidity)]
+scaled_predictors <- scale(scaled_predictors)
+
+w_env_bl_model_data <- cbind(
+  w_env_bl[, .(sample_no, season, site, Bl_present)],
+  scaled_predictors)
+
+# One-hot encoding for the Bl_species column for the multinomial model
+Bl_species_matrix <- dcast(w_env_bl[, .(sample_no, Bl_species)], sample_no ~ Bl_species, length)
+Bl_species_matrix[, sample_no := NULL]
+w_env_bl_model_data[, Bl_species := do.call(cbind, Bl_species_matrix)]
+
 # It will be very difficult to predict Klebsiella, Enterobacter, and probably E.coli, because there are few of each.
-# First, let's simplify to a binomial. (any present vs. any absent)
+# First, let's simplify to a binomial or logistic regression. (any present vs. any absent). Bernoulli is used.
 # But otherwise, as done by the UGA statistician, a multinomial regression is appropriate
-# FIXME SCALE PREDICTORS
 
 bl_bern_fit <- brm(
   bf(Bl_present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = w_env_bl, family = bernoulli(link = 'logit'),
+  data = w_env_bl_model_data, family = bernoulli(link = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
   chains = 4, iter = 3000, warmup = 2000, seed = 70924,
   file = 'project/bl_bern_fit'
 )
+
+bl_mult_fit <- brm(
+  bf(Bl_species_matrix | 1 ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = w_env_bl_model_data, data2 = Bl_species_matrix, family = multinomial(link = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71322,
+  file = 'project/bl_mult_fit'
+)
+
+# FIXME Extract some results.
 
 # 1M. antibiotic concentration --------------------------------------------
 

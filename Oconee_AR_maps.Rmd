@@ -188,9 +188,10 @@ ar_pres_abs_cols <- c(grep('^AR_Ecoli', names(water_sample_rawdata), value = TRU
 ar_cols <- c(id_cols, ar_pres_abs_cols)
 water_sample_ar <- water_sample_rawdata[, ..ar_cols]
 
-# Again, fill in the ID columns down for any samples with multiple rows, then convert - and + to 0 and 1.
+# Edit 13 July: condense presence absence for samples with multiple rows to 1 if present in any isolate, 0 otherwise.
 water_sample_ar[, (id_cols) := lapply(.SD, na.locf), .SDcols = id_cols]
 water_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = ar_pres_abs_cols]
+water_sample_ar <- water_sample_ar[, lapply(.SD, \(x) as.numeric(any(x))), by = id_cols, .SDcols = ar_pres_abs_cols]
 ```
 
 ```{r, eval = FALSE, echo = FALSE}
@@ -259,7 +260,7 @@ wastewater_sample_ar <- wastewater_sample_rawdata[, ..ar_cols]
 # Again, fill in the ID columns down for any samples with multiple rows, then convert - and + to 0 and 1.
 wastewater_sample_ar[, (ww_id_cols) := lapply(.SD, na.locf), .SDcols = ww_id_cols]
 wastewater_sample_ar[, (ar_pres_abs_cols) := lapply(.SD, function(x) as.numeric(x == '+')), .SDcols = ar_pres_abs_cols]
-
+wastewater_sample_ar <- wastewater_sample_ar[, lapply(.SD, \(x) as.numeric(any(x))), by = ww_id_cols, .SDcols = ar_pres_abs_cols]
 ```
 
 ```{r, eval = FALSE, echo = FALSE}
@@ -606,7 +607,7 @@ plot_emtrends <- function(variable) {
 }
 ```
 
-The temperature effect size plot confirms what we saw above, that *Salmonella* has a negative relationship so is more likely to be present in colder water samples, ESBL is maybe weakly associated with colder water but I would call it very weak evidence, and the other taxa are not.
+The temperature effect size plot confirms what we saw above, that *Salmonella* has a negative relationship so is more likely to be present in colder water samples, and the other taxa do not have any particular association with colder or warmer water.
 
 ```{r, echo = FALSE}
 plot_emtrends(variable = 'temperature')
