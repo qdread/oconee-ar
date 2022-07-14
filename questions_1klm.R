@@ -125,7 +125,75 @@ bl_cat_fit <- brm(
   file = 'project/bl_cat_fit'
 )
 
-# FIXME Extract some results.
+# Plot parameter estimates from Bernoulli fit. We don't have separate ones by taxon so this is simpler.
+bl_bern_slopes <- bl_bern_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable))
+
+# Weak evidence for a positive pH trend, where there is more likelihood to be a 
+ggplot(bl_bern_slopes, aes(y = .variable, x = .value)) +
+  stat_pointinterval() +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank())
+
+# Plot marginal effects for each of the continuous predictors
+scaled_centers <- attr(bl_presabs_scaled_predictors, 'scaled:center')
+scaled_scales <- attr(bl_presabs_scaled_predictors, 'scaled:scale')
+
+x_break_list <- list(
+  temperature = c(5, 10, 15, 20, 25),
+  pH = c(6.5, 7, 7.5),
+  turbidity = c(0, 3, 10, 30),
+  conductivity = c(50, 100, 500),
+  Ecoli_counts = c(3, 10, 30, 100, 300, 3000)
+)
+
+variables <- c('temperature', 'pH', 'turbidity', 'conductivity', 'Ecoli_counts')
+blue_cols <- RColorBrewer::brewer.pal(3, "Blues")[1:2]
+
+bl_bern_marginal_plots <- lapply(variables, function(variable) {
+  x_range <- range(bl_presabs_model_data[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
+  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
+  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
+    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
+    x_scale_trans <- 'log1p'
+  } else {
+    x_scale_trans <- 'identity'
+  }
+  
+  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
+  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
+  
+  marginal_draws <- brmsmargins(bl_bern_fit, at = pred_dat)
+  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
+  
+  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
+    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
+    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
+    geom_line(size = 0.8) + 
+    theme(legend.position = 'none') +
+    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
+    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
+    labs(y = 'modeled probability of any beta-lactamase presence')
+  
+})
+
+# Plot marginal means for each season
+bl_bern_season_means <- emmeans(bl_bern_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = plogis(.value))
+
+ggplot(bl_bern_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  labs(y = 'modeled probability of any beta-lactamase presence') +
+  theme(legend.position = c(0.1, 0.8))
+
+# FIXME Plot the results of the categorical model too.
 
 # 1M. antibiotic concentration --------------------------------------------
 
@@ -178,3 +246,69 @@ ant_conc_hulognorm_fit <- brm(
   chains = 4, iter = 3000, warmup = 2000, seed = 70923,
   file = 'project/ant_conc_hulognorm_fit'
 )
+
+# Compare the models
+ant_conc_hugamma_fit <- add_criterion(ant_conc_hugamma_fit, 'loo')
+ant_conc_hulognorm_fit <- add_criterion(ant_conc_hulognorm_fit, 'loo')
+
+loo_compare(ant_conc_hugamma_fit, ant_conc_hulognorm_fit) # Hurdle gamma is somewhat better.
+
+pp_check(ant_conc_hugamma_fit)
+pp_check(ant_conc_hulognorm_fit)
+
+# Plot parameter estimates from hurdle gamma fit. We don't have separate ones by taxon so this is simpler.
+ant_conc_slopes <- ant_conc_hugamma_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable))
+
+# Essentially no trend except for differences between seasons.
+ggplot(ant_conc_slopes, aes(y = .variable, x = .value)) +
+  stat_pointinterval() +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank())
+
+# Plot marginal effects for each of the continuous predictors
+scaled_centers <- attr(antconc_scaled_predictors, 'scaled:center')
+scaled_scales <- attr(antconc_scaled_predictors, 'scaled:scale')
+
+ant_conc_marginal_plots <- lapply(variables, function(variable) {
+  x_range <- range(antconc_model_data[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
+  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
+  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
+    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
+    x_scale_trans <- 'log1p'
+  } else {
+    x_scale_trans <- 'identity'
+  }
+  
+  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
+  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
+  
+  marginal_draws <- brmsmargins(ant_conc_hugamma_fit, at = pred_dat)
+  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
+  
+  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
+    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
+    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
+    geom_line(size = 0.8) + 
+    theme(legend.position = 'none') +
+    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
+    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
+    labs(y = 'modeled total antibiotic concentration')
+  
+})
+
+# Plot marginal means for each season
+ant_conc_season_means <- emmeans(ant_conc_hugamma_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value))
+
+ggplot(ant_conc_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  labs(y = 'modeled total antibiotic concentration') +
+  theme(legend.position = c(0.1, 0.8))
