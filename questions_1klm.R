@@ -45,7 +45,7 @@ watersheds <- st_read('project/study_region_huc12s.gpkg')
 w_env[temperature >= 32, temperature := NA]
 
 
-# new data processing and analysis ----------------------------------------
+##### new data processing and analysis 
 
 # 1k. Use environmental factors to predict beta-lactamase species
 # 1l. Use environmental factors to predict AR gene copy numbers
@@ -195,6 +195,138 @@ ggplot(bl_bern_season_means, aes(x = season, y = .value)) +
 
 # FIXME Plot the results of the categorical model too.
 
+
+# 1L. antibiotic resistance gene copy numbers -----------------------------
+
+w_env_arg_cn <- w_env[w_arg_copynum, on = w_id_cols]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_arg_cn[, season := factor(season, levels = season_order)]
+
+# Visualize distributions of the different ARGs, ignoring predictors.
+arg_abs_names <- grep('^abs', names(w_arg_copynum), value = TRUE)
+arg_rlt_names <- grep('^rlt', names(w_arg_copynum), value = TRUE)
+w_env_arg_long <- melt(w_env_arg_cn, id.vars = w_id_cols, measure.vars = c(arg_abs_names, arg_rlt_names), variable.name = 'ARG', value.name = 'copy_number') %>%
+  separate(ARG, into = c('type', 'ARG'), sep = '_') %>%
+  dcast(sample_no + season + site + area + ARG ~ type)
+
+ggplot(w_env_arg_long, aes(x = abs)) +
+  geom_density() +
+  facet_wrap(~ ARG, scales = 'free') +
+  scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 1, 10, 100, 1000))
+
+ggplot(w_env_arg_long, aes(x = rlt)) +
+  geom_density() +
+  facet_wrap(~ ARG, scales = 'free') +
+  scale_x_continuous(trans = 'pseudo_log')
+
+# As the UGA statistician noted, abs and rlt have the same distribution.
+# A hurdle model (gamma or lognormal) is indicated.
+ggplot(w_env_arg_long[ARG == 'total'], aes(x = abs)) +
+  geom_density() 
+
+ggplot(w_env_arg_long[ARG == 'total'], aes(x = rlt)) +
+  geom_density() 
+
+# Scale predictors
+arg_scaled_predictors <- w_env_arg_cn[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+arg_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
+arg_scaled_predictors[, conductivity := log1p(conductivity)]
+arg_scaled_predictors[, turbidity := log1p(turbidity)]
+arg_scaled_predictors <- scale(arg_scaled_predictors)
+
+arg_model_data <- cbind(
+  w_env_arg_cn[, .(sample_no, season, site, abs_total)],
+  arg_scaled_predictors)
+
+arg_cn_hugamma_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71422,
+  file = 'project/arg_cn_hugamma_fit'
+)
+
+arg_cn_hulognorm_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71423,
+  file = 'project/arg_cn_hulognorm_fit'
+)
+
+# Compare the models
+arg_cn_hugamma_fit <- add_criterion(arg_cn_hugamma_fit, 'loo')
+arg_cn_hulognorm_fit <- add_criterion(arg_cn_hulognorm_fit, 'loo')
+
+loo_compare(arg_cn_hugamma_fit, arg_cn_hulognorm_fit) # Hurdle gamma is somewhat better.
+
+pp_check(arg_cn_hugamma_fit) + scale_x_log10() # This looks better.
+pp_check(arg_cn_hulognorm_fit) + scale_x_log10()
+
+# Plot parameter estimates from hurdle gamma fit. We don't have separate ones by taxon so this is simpler.
+arg_cn_slopes <- arg_cn_hugamma_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable))
+
+# We see decent evidence for a negative pH trend (more ARG copy numbers in acidic water)
+# and a positive Ecoli trend (more ARG copy numbers in samples with more Ecoli)
+# conductivity may also show a positive trend.
+ggplot(arg_cn_slopes, aes(y = .variable, x = .value)) +
+  stat_pointinterval() +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank())
+
+# Plot marginal effects for each of the continuous predictors
+scaled_centers <- attr(arg_scaled_predictors, 'scaled:center')
+scaled_scales <- attr(arg_scaled_predictors, 'scaled:scale')
+
+arg_cn_marginal_plots <- lapply(variables, function(variable) {
+  x_range <- range(arg_model_data[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
+  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
+  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
+    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
+    x_scale_trans <- 'log1p'
+  } else {
+    x_scale_trans <- 'identity'
+  }
+  
+  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
+  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
+  
+  marginal_draws <- brmsmargins(arg_cn_hugamma_fit, at = pred_dat)
+  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
+  
+  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
+    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
+    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
+    geom_line(size = 0.8) + 
+    theme(legend.position = 'none') +
+    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
+    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
+    scale_y_log10(name = 'modeled total AR gene copy numbers')
+  
+})
+
+# Plot marginal means for each season
+arg_cn_season_means <- emmeans(arg_cn_hugamma_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value))
+
+ggplot(arg_cn_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled total AR gene copy numbers') +
+  theme(legend.position = c(0.1, 0.8)) 
+
+
 # 1M. antibiotic concentration --------------------------------------------
 
 w_env_ant_conc <- w_env[w_antibiotic_conc, on = w_id_cols]
@@ -253,8 +385,8 @@ ant_conc_hulognorm_fit <- add_criterion(ant_conc_hulognorm_fit, 'loo')
 
 loo_compare(ant_conc_hugamma_fit, ant_conc_hulognorm_fit) # Hurdle gamma is somewhat better.
 
-pp_check(ant_conc_hugamma_fit)
-pp_check(ant_conc_hulognorm_fit)
+pp_check(ant_conc_hugamma_fit) + scale_x_log10() # This looks a tiny bit better.
+pp_check(ant_conc_hulognorm_fit) + scale_x_log10()
 
 # Plot parameter estimates from hurdle gamma fit. We don't have separate ones by taxon so this is simpler.
 ant_conc_slopes <- ant_conc_hugamma_fit %>%
@@ -297,7 +429,7 @@ ant_conc_marginal_plots <- lapply(variables, function(variable) {
     theme(legend.position = 'none') +
     scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
     scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
-    labs(y = 'modeled total antibiotic concentration')
+    scale_y_log10(name = 'modeled total antibiotic concentration')
   
 })
 
@@ -310,5 +442,5 @@ ggplot(ant_conc_season_means, aes(x = season, y = .value)) +
   stat_interval(.width = c(0.66, 0.95)) +
   stat_pointinterval(geom = "point", size = 2) +
   scale_color_brewer(palette = 'Blues', name = 'credible interval') +
-  labs(y = 'modeled total antibiotic concentration') +
+  scale_y_log10(name = 'modeled total antibiotic concentration') +
   theme(legend.position = c(0.1, 0.8))
