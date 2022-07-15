@@ -44,6 +44,13 @@ watersheds <- st_read('project/study_region_huc12s.gpkg')
 
 w_env[temperature >= 32, temperature := NA]
 
+scale_predictors <- function(DT) {
+  DTscale <- DT[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+  DTscale[, Ecoli_counts := log1p(Ecoli_counts)]
+  DTscale[, conductivity := log1p(conductivity)]
+  DTscale[, turbidity := log1p(turbidity)]
+  scale(DTscale)
+}
 
 ##### new data processing and analysis 
 
@@ -131,9 +138,12 @@ bl_bern_slopes <- bl_bern_fit %>%
   filter(!.variable %in% 'b_Intercept') %>%
   mutate(.variable = gsub('b_', '', .variable))
 
-# Weak evidence for a positive pH trend, where there is more likelihood to be a 
+# Weak evidence for a positive pH trend, where there is more likelihood to be a beta-lac bacterium where it is more basic. 
+# Also varies by season 
 ggplot(bl_bern_slopes, aes(y = .variable, x = .value)) +
-  stat_pointinterval() +
+  stat_interval(.width = c(0.66, 0.9, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
   geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
   labs(x = 'parameter estimate') +
   theme(axis.title.y = element_blank())
@@ -153,9 +163,9 @@ x_break_list <- list(
 variables <- c('temperature', 'pH', 'turbidity', 'conductivity', 'Ecoli_counts')
 blue_cols <- RColorBrewer::brewer.pal(3, "Blues")[1:2]
 
-bl_bern_marginal_plots <- lapply(variables, function(variable) {
+plot_marginal_effect <- function(variable, fit, y_label, n_x = 50, y_scale_trans = 'identity') {
   x_range <- range(bl_presabs_model_data[[variable]], na.rm = TRUE)
-  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
   x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
   if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
     x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
@@ -167,7 +177,7 @@ bl_bern_marginal_plots <- lapply(variables, function(variable) {
   pred_dat <- setNames(data.frame(x = x_r_seq), variable)
   pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
   
-  marginal_draws <- brmsmargins(bl_bern_fit, at = pred_dat)
+  marginal_draws <- brmsmargins(fit, at = pred_dat)
   marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
   
   ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
@@ -177,9 +187,10 @@ bl_bern_marginal_plots <- lapply(variables, function(variable) {
     theme(legend.position = 'none') +
     scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
     scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
-    labs(y = 'modeled probability of any beta-lactamase presence')
-  
-})
+    scale_y_continuous(name = y_label, trans = y_scale_trans)
+}
+
+bl_bern_marginal_plots <- lapply(variables, plot_marginal_effect, fit = bl_bern_fit, y_label = 'modeled probability of any beta-lactamase presence')
 
 # Plot marginal means for each season
 bl_bern_season_means <- emmeans(bl_bern_fit, ~ season) %>%
@@ -193,8 +204,30 @@ ggplot(bl_bern_season_means, aes(x = season, y = .value)) +
   labs(y = 'modeled probability of any beta-lactamase presence') +
   theme(legend.position = c(0.1, 0.8))
 
-# FIXME Plot the results of the categorical model too.
+#### Results from categorical fit
 
+# Plot parameter estimates from softmax or categorical fit. We have a slope for each combination of taxon x predictor.
+bl_cat_slopes <- bl_cat_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  mutate(.variable = gsub('b_mu', '', .variable)) %>%
+  filter(!grepl('Intercept', .variable)) %>%
+  separate(.variable, into = c('taxon', '.variable'), sep = '_', extra = 'merge')
+
+# Looks like the Klebsiella species are more likely to be found in basic water samples, same with Serratia to some extent.
+# The rarer ones do not have much of a pattern.
+# Serratia is less common in the fall relative to the other three seasons.
+ggplot(bl_cat_slopes, aes(y = .variable, x = .value)) +
+  stat_interval(.width = c(0.66, 0.9, 0.95)) +
+  stat_summary(fun = median, geom = 'point', size = 2) +
+  facet_wrap(~ taxon) +
+  scale_color_brewer(name = 'credible interval', palette = 'Blues') +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank(), legend.position = c(0.8, 0.2))
+
+# Plot marginal effects for each of the continuous predictors from softmax fit
+# brmsmargins doesn't currently support models with multivariate outcome. emmeans is not supported either.
+# FIXME later I will try to add something here.
 
 # 1L. antibiotic resistance gene copy numbers -----------------------------
 
@@ -228,11 +261,7 @@ ggplot(w_env_arg_long[ARG == 'total'], aes(x = rlt)) +
   geom_density() 
 
 # Scale predictors
-arg_scaled_predictors <- w_env_arg_cn[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
-arg_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
-arg_scaled_predictors[, conductivity := log1p(conductivity)]
-arg_scaled_predictors[, turbidity := log1p(turbidity)]
-arg_scaled_predictors <- scale(arg_scaled_predictors)
+arg_scaled_predictors <- scale_predictors(w_env_arg_cn)
 
 arg_model_data <- cbind(
   w_env_arg_cn[, .(sample_no, season, site, abs_total)],
@@ -286,33 +315,7 @@ ggplot(arg_cn_slopes, aes(y = .variable, x = .value)) +
 scaled_centers <- attr(arg_scaled_predictors, 'scaled:center')
 scaled_scales <- attr(arg_scaled_predictors, 'scaled:scale')
 
-arg_cn_marginal_plots <- lapply(variables, function(variable) {
-  x_range <- range(arg_model_data[[variable]], na.rm = TRUE)
-  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
-  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
-  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
-    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
-    x_scale_trans <- 'log1p'
-  } else {
-    x_scale_trans <- 'identity'
-  }
-  
-  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
-  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
-  
-  marginal_draws <- brmsmargins(arg_cn_hugamma_fit, at = pred_dat)
-  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
-  
-  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
-    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
-    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
-    geom_line(size = 0.8) + 
-    theme(legend.position = 'none') +
-    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
-    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
-    scale_y_log10(name = 'modeled total AR gene copy numbers')
-  
-})
+arg_cn_marginal_plots <- lapply(variables, plot_marginal_effect, fit = arg_cn_hugamma_fit, y_label = 'modeled total AR gene copy numbers', y_scale_trans = 'log10')
 
 # Plot marginal means for each season
 arg_cn_season_means <- emmeans(arg_cn_hugamma_fit, ~ season) %>%
@@ -349,11 +352,7 @@ ggplot(w_env_ant_conc, aes(x = total)) +
   geom_density() 
 
 # Scale predictors
-antconc_scaled_predictors <- w_env_ant_conc[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
-antconc_scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
-antconc_scaled_predictors[, conductivity := log1p(conductivity)]
-antconc_scaled_predictors[, turbidity := log1p(turbidity)]
-antconc_scaled_predictors <- scale(antconc_scaled_predictors)
+antconc_scaled_predictors <- scale_predictors(w_env_ant_conc)
 
 antconc_model_data <- cbind(
   w_env_ant_conc[, .(sample_no, season, site, total)],
@@ -405,33 +404,7 @@ ggplot(ant_conc_slopes, aes(y = .variable, x = .value)) +
 scaled_centers <- attr(antconc_scaled_predictors, 'scaled:center')
 scaled_scales <- attr(antconc_scaled_predictors, 'scaled:scale')
 
-ant_conc_marginal_plots <- lapply(variables, function(variable) {
-  x_range <- range(antconc_model_data[[variable]], na.rm = TRUE)
-  x_r_seq <- seq(x_range[1], x_range[2], length.out = 50)
-  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
-  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
-    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
-    x_scale_trans <- 'log1p'
-  } else {
-    x_scale_trans <- 'identity'
-  }
-  
-  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
-  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
-  
-  marginal_draws <- brmsmargins(ant_conc_hugamma_fit, at = pred_dat)
-  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
-  
-  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
-    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
-    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
-    geom_line(size = 0.8) + 
-    theme(legend.position = 'none') +
-    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
-    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
-    scale_y_log10(name = 'modeled total antibiotic concentration')
-  
-})
+ant_conc_marginal_plots <- lapply(variables, plot_marginal_effect, fit = ant_conc_hugamma_fit, y_label = 'modeled total antibiotic concentration', y_scale_trans = 'log10')
 
 # Plot marginal means for each season
 ant_conc_season_means <- emmeans(ant_conc_hugamma_fit, ~ season) %>%

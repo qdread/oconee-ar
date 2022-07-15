@@ -55,6 +55,7 @@ library(tidybayes)
 library(brmsmargins)
 library(gt)
 library(glue)
+library(cowplot)
 
 theme_set(
   theme_bw() +
@@ -64,6 +65,40 @@ theme_set(
 
 options(mc.cores = 4, brms.backend = 'cmdstanr', brms.file_refit = 'on_change')
 ```
+
+```{r, echo = FALSE}
+# Define some variables and functions for later use
+variables <- c('temperature', 'pH', 'turbidity', 'conductivity', 'Ecoli_counts')
+blue_cols <- RColorBrewer::brewer.pal(3, "Blues")[1:2]
+
+plot_marginal_effect <- function(variable, fit, y_label, n_x = 50, y_scale_trans = 'identity') {
+  x_range <- range(bl_presabs_model_data[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
+  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
+  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
+    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
+    x_scale_trans <- 'log1p'
+  } else {
+    x_scale_trans <- 'identity'
+  }
+  
+  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
+  pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
+  
+  marginal_draws <- brmsmargins(fit, at = pred_dat)
+  marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
+  
+  ggplot(marginal_summ, aes(x = !!ensym(variable), y = q0.5)) + 
+    geom_ribbon(aes(ymin = q0.025, ymax = q0.975), color = NA, fill = blue_cols[1]) + 
+    geom_ribbon(aes(ymin = q0.17, ymax = q0.83), color = NA, fill = blue_cols[2]) + 
+    geom_line(size = 0.8) + 
+    theme(legend.position = 'none') +
+    scale_fill_brewer(palette = 'Dark2') + scale_color_brewer(palette = 'Dark2') +
+    scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
+    scale_y_continuous(name = y_label, trans = y_scale_trans)
+}
+```
+
 
 First load the coordinates and convert to a shapefile. Save as a GeoPackage shapefile for future use. Do the same for the boundary of the Upper Oconee watershed. Also get the smaller HUC12 watershed boundaries that are contained within the single boundary of the Upper Oconee. (Note: this portion of the code is not run when the notebook is created.)
 
@@ -465,11 +500,15 @@ A superior way to do this is to fit a MGLMM (multivariate generalized linear mix
 This takes the log+1 transformation for some of the predictors and then standardizes all of them which is a good practice for a multiple regression. Then the data is converted to a long form. I am following [the suggestion in this forum post](https://discourse.mc-stan.org/t/multivariate-glm-in-brms/11930/5) to convert the data to long form and include the interactions between taxon and the other predictors.
 
 ```{r}
-scaled_predictors <- w_env_ar[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
-scaled_predictors[, Ecoli_counts := log1p(Ecoli_counts)]
-scaled_predictors[, conductivity := log1p(conductivity)]
-scaled_predictors[, turbidity := log1p(turbidity)]
-scaled_predictors <- scale(scaled_predictors)
+scale_predictors <- function(DT) {
+  DTscale <- DT[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
+  DTscale[, Ecoli_counts := log1p(Ecoli_counts)]
+  DTscale[, conductivity := log1p(conductivity)]
+  DTscale[, turbidity := log1p(turbidity)]
+  scale(DTscale)
+}
+
+scaled_predictors <- scale_predictors(w_env_ar)
 
 w_env_ar_model_data <- cbind(
   w_env_ar[, .(sample_no, season, site, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)],
@@ -501,10 +540,10 @@ Quick convergence diagnostic: what is the maximum R-hat statistic? If it is clos
 max(rhat(mv_ar_fit))
 ```
 
-Quick diagnostic to see if the model fits the data well: a posterior predictive check plot. If the thin blue lines (samples from the posterior distribution) match the thick black line (the data), it does. The eyeball test says: yes, it is a good fit.
+Quick diagnostic to see if the model fits the data well: a posterior predictive check plot. If the black points with error bars (samples from the posterior distribution) match the blue bars (the data), it does. The eyeball test says: yes, it is a good fit.
 
 ```{r}
-pp_check(mv_ar_fit)
+pp_check(mv_ar_fit, type = 'bars', ndraws = 100)
 ```
 
 ## Examine model output
@@ -528,7 +567,7 @@ scaled_centers <- attr(scaled_predictors, 'scaled:center')
 scaled_scales <- attr(scaled_predictors, 'scaled:scale')
 
 ### Define function to construct marginal effect plots
-plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE, breaks_x) {
+plot_marginal_effect_bytaxon <- function(variable, n_x = 50, backtransform_log = FALSE, breaks_x) {
   x_range <- range(w_env_ar_long[[variable]], na.rm = TRUE)
   x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
   x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
@@ -557,36 +596,44 @@ plot_marginal_effect <- function(variable, n_x = 50, backtransform_log = FALSE, 
     scale_x_continuous(name = variable, trans = x_scale_trans, breaks = breaks_x) +
     labs(y = 'modeled probability of presence')
 }
+
+x_break_list <- list(
+  temperature = c(5, 10, 15, 20, 25),
+  pH = c(6.5, 7, 7.5),
+  turbidity = c(0, 3, 10, 30),
+  conductivity = c(50, 100, 500),
+  Ecoli_counts = c(3, 10, 30, 100, 300, 3000)
+)
 ```
 
 The temperature trends plot shows fairly strong evidence that antibiotic-resistant *Salmonella* is more likely to be present at lower temperatures and almost completely absent at high water temperature. A similar but much weaker trend may exist for ESBL but the uncertainty is very high. The other AR taxa show no evidence for any response to temperature.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'temperature', breaks_x = c(5, 10, 15, 20, 25))
+plot_marginal_effect_bytaxon(variable = 'temperature', breaks_x = x_break_list[['temperature']])
 ```
 
 The pH trends plot shows that antibiotic-resistant *E. coli* may be more likely to be present in lower-pH water samples although this is a fairly weak trend and the uncertainty is high. I would say none of the other taxa show any evidence for a pH response.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'pH', breaks_x = c(6.5, 7, 7.5))
+plot_marginal_effect_bytaxon(variable = 'pH', breaks_x = x_break_list[['pH']])
 ```
 
 Turbidity does not show much of a response for any of the taxa, except possibly there is weak evidence that CRE is more likely to be present in more turbid water samples.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'turbidity', backtransform_log = TRUE, breaks_x = c(0, 3, 10, 30))
+plot_marginal_effect_bytaxon(variable = 'turbidity', backtransform_log = TRUE, breaks_x = x_break_list[['turbidity']])
 ```
 
 The signal is weak and uncertainty high for conductivity response so I would not say there is much evidence for any response.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'conductivity', backtransform_log = TRUE, breaks_x = c(50, 100, 500))
+plot_marginal_effect_bytaxon(variable = 'conductivity', backtransform_log = TRUE, breaks_x = x_break_list[['conductivity']])
 ```
 
 The presence of antibiotic-resistant *E. coli* is predicted fairly strongly by the *E. coli* counts in the water sample which is not surprising. However the other taxa do not show any evidence that they respond to that.
 
 ```{r, echo = FALSE}
-plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks_x = c(3, 10, 30, 100, 300, 3000))
+plot_marginal_effect_bytaxon(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks_x = x_break_list[['Ecoli_counts']])
 ```
 
 ### Trend effect size plots
@@ -594,47 +641,49 @@ plot_marginal_effect(variable = 'Ecoli_counts', backtransform_log = TRUE, breaks
 Now to make inferences based on those trends we can eyeball from the plots, let's estimate the marginal trend effect sizes (i.e. slopes) for each combination of taxon and predictor variable. These are displayed in both plot and table form. On the plot, the large point is the median estimate, the thick error bar is the 66% credible interval (about 1 standard deviation), and the thin error bar is the 95% credible interval (about 2 standard deviations).
 
 ```{r, echo = FALSE}
-plot_emtrends <- function(variable) {
+plot_emtrends_bytaxon <- function(variable) {
   trends <- emtrends(mv_ar_fit, ~ taxon, var = variable)
   trend_draws <- gather_emmeans_draws(trends)
   ggplot(trend_draws, aes(x = taxon, y = .value)) +
-    stat_pointinterval() +
+    stat_interval(.width = c(.66, .95)) +
+    stat_summary(fun = median, geom = 'point', size = 2) +
+    scale_color_brewer(palette = 'Blues', name = 'credible interval') +
     geom_hline(yintercept = 0, linetype = 'dashed', color = 'slateblue', size = 1) +
     scale_y_continuous(name = 'estimated trend') +
     coord_flip() +
     ggtitle(paste(variable, 'trends by AR taxon')) +
-    theme(axis.title.y = element_blank())
+    theme(axis.title.y = element_blank(), legend.position = 'bottom')
 }
 ```
 
 The temperature effect size plot confirms what we saw above, that *Salmonella* has a negative relationship so is more likely to be present in colder water samples, and the other taxa do not have any particular association with colder or warmer water.
 
 ```{r, echo = FALSE}
-plot_emtrends(variable = 'temperature')
+plot_emtrends_bytaxon(variable = 'temperature')
 ```
 
 The pH effect size plot confirms there is decent evidence that AR *E. coli* is more likely to be present in more acidic water samples but other taxa are not responsive to pH.
 
 ```{r, echo = FALSE}
-plot_emtrends(variable = 'pH')
+plot_emtrends_bytaxon(variable = 'pH')
 ```
 
 The turbidity plot confirms most taxa do not change their probability of presence with changes in turbidity. The positive trend in CRE overlaps zero at 95% confidence by a large amount so is probably too weak of evidence to say much about.
 
 ```{r, echo = FALSE}
-plot_emtrends(variable = 'turbidity')
+plot_emtrends_bytaxon(variable = 'turbidity')
 ```
 
 The effect size plot for conductivity shows little response for any taxon.
 
 ```{r, echo = FALSE}
-plot_emtrends(variable = 'conductivity')
+plot_emtrends_bytaxon(variable = 'conductivity')
 ```
 
 The *E. coli* counts effect size plot confirms the positive response of probability of AR *E. coli* response to total *E. coli* and also confirms no other taxa's probability is predicted by that.
 
 ```{r, echo = FALSE}
-plot_emtrends(variable = 'Ecoli_counts')
+plot_emtrends_bytaxon(variable = 'Ecoli_counts')
 ```
 
 I also made a plot for each season separately. The uncertainty is very high for some of the taxa that are not present at all for a particular season, or only have one or two presences for that season. We can see that there are differences for some of the taxa for some of the seasons, notably ESBL is more likely to be present in winter than fall, and *Salmonella* more likely in fall than winter, however there is very high uncertainty in all the other taxa because of the low number of presences overall making it hard to fit the model.
@@ -645,7 +694,9 @@ season_mean_draws <- gather_emmeans_draws(season_means) %>%
   mutate(p = plogis(.value))
 
 ggplot(season_mean_draws, aes(x = season, y = p)) +
-  stat_pointinterval() +
+  stat_interval(.width = c(.66, .95)) +
+  stat_summary(fun = median, geom = 'point', size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
   facet_wrap(~ taxon, scales = 'free_y') +
   labs(y = 'modeled probability of presence') +
   ggtitle('Marginal means for each season by AR taxon')
@@ -688,5 +739,263 @@ Rutilitybelt::emm_quantile(season_means) %>%
     row_group.font.weight = 'bold',
     column_labels.font.weight = 'bold'
   )
+```
+
+## Presence of Beta-lactamase gene-containing bacteria
+
+This is question 1K. First, let's make a table of how many of each taxon are present. The majority of the taxa present are *Serratia*. Because there are so few presences for the other taxa, I don't think it would be that informative to do the categorical regression where we look at each one separately. So I decided to lump everything together and just look at presence of any beta-lactamase-containing bacterial taxon versus having none at all, for each water sample.
+
+```{r}
+w_env_bl <- w_env[w_bl, on = w_id_cols]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_bl[, season := factor(season, levels = season_order)]
+
+w_env_bl <- w_env_bl[!Bl_species %in% '']
+w_env_bl[Bl_species == '-', Bl_species := 'none']
+w_env_bl[, Bl_species := relevel(factor(Bl_species), ref = 'none')]
+
+table(w_env_bl$Bl_species) 
+```
+
+I combined the data and scaled the predictors appropriately.
+
+```{r}
+# Put together the data for the present absent regression
+env_cols <- c('temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts')
+w_env_bl_presabs <- w_env_bl[, .(Bl_present = any(Bl_species != 'none')), by = c(w_id_cols, env_cols)]
+
+# Scale the predictors as done previously
+bl_presabs_scaled_predictors <- scale_predictors(w_env_bl_presabs)
+
+bl_presabs_model_data <- cbind(
+  w_env_bl_presabs[, .(sample_no, season, site, Bl_present)],
+  bl_presabs_scaled_predictors)
+
+# Put together the data for the categorical regression
+bl_cat_scaled_predictors <- scale_predictors(w_env_bl)
+
+bl_cat_model_data <- cbind(
+  w_env_bl[, .(sample_no, season, site, Bl_species)],
+  bl_cat_scaled_predictors)
+bl_cat_model_data[, sample_no := factor(sample_no)]
+
+# One-hot encoding for the Bl_species column for the multinomial model
+Bl_species_matrix <- data.table(ID = 1:nrow(w_env_bl), sp = w_env_bl$Bl_species) |>
+  dcast(ID ~ sp, length)
+Bl_species_matrix[, ID := NULL]
+w_env_bl_model_data[, Bl_species := do.call(cbind, Bl_species_matrix)]
+```
+
+Here is a statistical model for predicting the probability of presence of at least one of any kind of beta-lactamase-containing bacterium in a water sample, based on the same environmental factors as before. It is a logistic regression because the outcome is binary (either yes, there is one, or no there is not).
+
+```{r}
+bl_bern_fit <- brm(
+  bf(Bl_present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = bl_presabs_model_data, family = bernoulli(link = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 70924,
+  file = 'project/bl_bern_fit'
+)
+```
+
+The model converges well and fits the data well too as this plot shows (the predicted values are black points with error bars, that line up well with the actual data which are the counts of absence = 0 and presence = 1).
+
+```{r}
+pp_check(bl_bern_fit, type="bars", ndraws = 100)
+```
+
+Plot the parameter estimates from the model. Mainly this shows that there are large seasonal differences in presence of beta-lac containing bacteria. Other trends are weak.
+
+```{r, echo = FALSE}
+# Plot parameter estimates from Bernoulli fit. We don't have separate ones by taxon so this is simpler.
+bl_bern_slopes <- bl_bern_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable))
+
+# Weak evidence for a positive pH trend, where there is more likelihood to be a beta-lac bacterium where it is more basic. 
+# Also varies by season 
+ggplot(bl_bern_slopes, aes(y = .variable, x = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank(), legend.position = c(0.8, 0.2))
+```
+
+Next, plot marginal trends for each of the continuous predictors and marginal means for seasons. You can see a mild hint of a trend with pH but otherwise season is the strongest predictor.
+
+```{r, echo = FALSE}
+scaled_centers <- attr(bl_presabs_scaled_predictors, 'scaled:center')
+scaled_scales <- attr(bl_presabs_scaled_predictors, 'scaled:scale')
+
+bl_bern_marginal_plots <- lapply(variables, plot_marginal_effect, fit = bl_bern_fit, y_label = 'modeled probability of any beta-lactamase presence')
+
+# Plot marginal means for each season
+bl_bern_season_means <- emmeans(bl_bern_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = plogis(.value))
+
+bl_bern_season_plot <- ggplot(bl_bern_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  labs(y = 'modeled probability of any beta-lactamase presence') +
+  theme(legend.position = c(0.2, 0.8))
+
+plot_grid(plotlist = c(bl_bern_marginal_plots, list(bl_bern_season_plot)), nrow = 3)
+```
+
+FIXME: here add tables of results
+
+FIXME: here add the categorical model if needed
+
+## Copy numbers for antibiotic resistance genes
+
+I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
+
+```{r}
+w_env_arg_cn <- w_env[w_arg_copynum, on = w_id_cols]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_arg_cn[, season := factor(season, levels = season_order)]
+
+# Visualize distributions of the different ARGs, ignoring predictors.
+arg_abs_names <- grep('^abs', names(w_arg_copynum), value = TRUE)
+arg_rlt_names <- grep('^rlt', names(w_arg_copynum), value = TRUE)
+w_env_arg_long <- melt(w_env_arg_cn, id.vars = w_id_cols, measure.vars = c(arg_abs_names, arg_rlt_names), variable.name = 'ARG', value.name = 'copy_number') %>%
+  separate(ARG, into = c('type', 'ARG'), sep = '_') %>%
+  dcast(sample_no + season + site + area + ARG ~ type)
+```
+
+The absolute and relative look about the same. They also have a skewed distribution with all non-negative values but a lot of 0 values. So a hurdle model is needed that fits a gamma or lognormal distribution and also has a separate component for the probability of having 0. In other words, we first model the probability of there being 0 copies, then if there are >0, model the number of copies. We are only going to work with the total number of copies across all genes because most of the individual genes have so few that it will be hard to fit a model to them.
+
+```{r, echo = FALSE}
+ggplot(w_env_arg_long, aes(x = abs)) +
+  geom_density() +
+  facet_wrap(~ ARG, scales = 'free') +
+  scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 1, 10, 100, 1000))
+
+ggplot(w_env_arg_long, aes(x = rlt)) +
+  geom_density() +
+  facet_wrap(~ ARG, scales = 'free') +
+  scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 0.001, 0.01, 0.1))
+```
+
+Scale predictors and fit the model. I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
+
+```{r}
+# Scale predictors
+arg_scaled_predictors <- scale_predictors(w_env_arg_cn)
+
+arg_model_data <- cbind(
+  w_env_arg_cn[, .(sample_no, season, site, abs_total)],
+  arg_scaled_predictors)
+
+arg_cn_hugamma_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71422,
+  file = 'project/arg_cn_hugamma_fit'
+)
+
+arg_cn_hugamma_variablehu_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site),
+     hu ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71422,
+  file = 'project/arg_cn_hugamma_variablehurdle_fit'
+)
+
+arg_cn_hulognorm_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71423,
+  file = 'project/arg_cn_hulognorm_fit'
+)
+
+arg_cn_hulognorm_variablehu_fit <- brm(
+  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site),
+     hu ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
+  data = arg_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 71424,
+  file = 'project/arg_cn_hulognorm_variablehu_fit'
+)
+```
+
+Model comparison is used to determine which model is best. The hurdle-gamma model is best but there is really no difference between the model with additional parameters and the simpler one, so we will keep the simpler one.
+
+```{r}
+arg_cn_hugamma_fit <- add_criterion(arg_cn_hugamma_fit, 'loo')
+arg_cn_hugamma_variablehu_fit <- add_criterion(arg_cn_hugamma_variablehu_fit, 'loo')
+arg_cn_hulognorm_fit <- add_criterion(arg_cn_hulognorm_fit, 'loo')
+arg_cn_hulognorm_variablehu_fit <- add_criterion(arg_cn_hulognorm_variablehu_fit, 'loo')
+
+loo_compare(arg_cn_hugamma_fit, arg_cn_hulognorm_fit, arg_cn_hugamma_variablehu_fit, arg_cn_hulognorm_variablehu_fit)
+```
+
+The model we selected as "best" looks like it fits the data reasonably well, and the more complex one does not appear to be any better.
+
+```{r}
+pp_check(arg_cn_hugamma_fit) + scale_x_log10()
+pp_check(arg_cn_hugamma_variablehu_fit) + scale_x_log10()
+```
+
+Plot the parameter estimates. Here we see pretty decent evidence that there is a negative pH trend so that more ARG copy numbers are found in more acidic samples, as well as solid evidence that more ARG copy numbers are found in samples with higher counts of *E. coli*. The seasonal trends do not look as strong as for some of the other response variables.
+
+```{r, echo = FALSE}
+arg_cn_slopes <- arg_cn_hugamma_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable))
+
+# We see decent evidence for a negative pH trend (more ARG copy numbers in acidic water)
+# and a positive Ecoli trend (more ARG copy numbers in samples with more Ecoli)
+# conductivity may also show a positive trend.
+ggplot(arg_cn_slopes, aes(y = .variable, x = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank(), legend.position = c(0.85, 0.15))
+```
+
+Next, plot the marginal trends for each of the continuous predictors, and the marginal means for the seasons. 
+
+```{r, echo = FALSE}
+# Plot marginal effects for each of the continuous predictors
+scaled_centers <- attr(arg_scaled_predictors, 'scaled:center')
+scaled_scales <- attr(arg_scaled_predictors, 'scaled:scale')
+
+arg_cn_marginal_plots <- lapply(variables, plot_marginal_effect, fit = arg_cn_hugamma_fit, y_label = 'modeled total AR gene copy numbers', y_scale_trans = 'log10')
+
+# Plot marginal means for each season
+arg_cn_season_means <- emmeans(arg_cn_hugamma_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value))
+
+arg_cn_season_plot <- ggplot(arg_cn_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled total AR gene copy numbers') +
+  theme(legend.position = c(0.1, 0.8)) 
+
+plot_grid(plotlist = c(bl_bern_marginal_plots, list(bl_bern_season_plot)), nrow = 3)
 ```
 
