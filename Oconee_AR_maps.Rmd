@@ -72,17 +72,13 @@ variables <- c('temperature', 'pH', 'turbidity', 'conductivity', 'Ecoli_counts')
 blue_cols <- RColorBrewer::brewer.pal(3, "Blues")[1:2]
 
 plot_marginal_effect <- function(variable, fit, y_label, n_x = 50, y_scale_trans = 'identity') {
-  x_range <- range(bl_presabs_model_data[[variable]], na.rm = TRUE)
-  x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
-  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
-  if (variable %in% c('turbidity', 'conductivity', 'Ecoli_counts')) {
-    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
-    x_scale_trans <- 'log1p'
-  } else {
-    x_scale_trans <- 'identity'
-  }
-  
-  pred_dat <- setNames(data.frame(x = x_r_seq), variable)
+  variable_scaled <- paste0(variable, '_scaled')
+  x_range <- range(w_env_scaled[[variable]], na.rm = TRUE)
+  x_r_seq <- seq(min(w_env_scaled[[variable_scaled]], na.rm = TRUE), max(w_env_scaled[[variable_scaled]], na.rm = TRUE), length.out = n_x)
+  x_r_seq_backtransformed <- seq(min(w_env_scaled[[variable]], na.rm = TRUE), max(w_env_scaled[[variable]], na.rm = TRUE), length.out = n_x)
+  x_scale_trans <- ifelse(variable %in% c('turbidity', 'conductivity', 'Ecoli_counts'), 'log1p', 'identity')
+
+  pred_dat <- setNames(data.frame(x = x_r_seq), variable_scaled)
   pred_dat_backtransformed <- setNames(data.frame(x = x_r_seq_backtransformed), variable)
   
   marginal_draws <- brmsmargins(fit, at = pred_dat)
@@ -333,6 +329,8 @@ sites <- st_read('project/sites.gpkg')
 watersheds <- st_read('project/study_region_huc12s.gpkg')
 
 w_env[temperature >= 32, temperature := NA]
+season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env[, season := factor(season, levels = season_order)]
 ```
 
 ### Maps of environmental variables
@@ -349,7 +347,6 @@ Join AR presence absence data with environmental data. Reshape the data to long 
 
 ```{r}
 w_env_ar <- w_env[w_ar, on = w_id_cols]
-season_order <- c('fall', 'winter', 'spring', 'summer')
 w_env_ar[, season := factor(season, levels = season_order)]
 
 w_ar_pres_abs <- melt(w_env_ar, id.vars = c(w_id_cols, 'temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts'), measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence', 'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
@@ -500,21 +497,26 @@ A superior way to do this is to fit a MGLMM (multivariate generalized linear mix
 This takes the log+1 transformation for some of the predictors and then standardizes all of them which is a good practice for a multiple regression. Then the data is converted to a long form. I am following [the suggestion in this forum post](https://discourse.mc-stan.org/t/multivariate-glm-in-brms/11930/5) to convert the data to long form and include the interactions between taxon and the other predictors.
 
 ```{r}
+# Scale predictors in environmental dataset.
 scale_predictors <- function(DT) {
   DTscale <- DT[, .(temperature, pH, conductivity, turbidity, Ecoli_counts)]
   DTscale[, Ecoli_counts := log1p(Ecoli_counts)]
   DTscale[, conductivity := log1p(conductivity)]
   DTscale[, turbidity := log1p(turbidity)]
+  setnames(DTscale, paste0(names(DTscale), '_scaled'))
   scale(DTscale)
 }
 
-scaled_predictors <- scale_predictors(w_env_ar)
+scaled_predictors <- scale_predictors(w_env)
+scaled_centers <- attr(scaled_predictors, 'scaled:center')
+scaled_scales <- attr(scaled_predictors, 'scaled:scale')
 
-w_env_ar_model_data <- cbind(
-  w_env_ar[, .(sample_no, season, site, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)],
-  scaled_predictors)
+w_env_scaled <- cbind(w_env, scaled_predictors)
 
-w_env_ar_long <- melt(w_env_ar_model_data, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence',                   'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
+w_env_ar <- w_env_scaled[w_ar, on = w_id_cols]
+w_env_ar[, season := factor(season, levels = season_order)]
+
+w_env_ar_long <- melt(w_env_ar, measure.vars = c('AR_Ecoli_presence', 'Salmonella_presence', 'Enterococcus_presence', 'ESBL', 'CRE'), variable.name = 'taxon', value.name = 'present')
 w_env_ar_long[, taxon := gsub('_presence', '', taxon)]
 ```
 
@@ -524,7 +526,7 @@ The fixed effects are the environmental predictors (including season) and the in
 
 ```{r}
 mv_ar_fit <- brm(
-  bf(present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + taxon:temperature + taxon:pH + taxon:conductivity + taxon:turbidity + taxon:Ecoli_counts + taxon:season + (1|site) + (1|taxon:site)), 
+  bf(present ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + taxon:temperature_scaled + taxon:pH_scaled + taxon:conductivity_scaled + taxon:turbidity_scaled + taxon:Ecoli_counts_scaled + taxon:season + (1|site) + (1|taxon:site)), 
   data = w_env_ar_long, family = bernoulli,
   prior = c(
     prior(normal(0, 3), class = b)
@@ -563,26 +565,17 @@ OK, so now that I have the philosophical stuff out of the way, let's look at the
 It's important to note that these are *marginal effect* plots, in other words the effect of each individual predictor variable holding all the other ones constant at their average value. This also means averaging over all sites and all seasons' trends.
 
 ```{r, echo = FALSE}
-scaled_centers <- attr(scaled_predictors, 'scaled:center')
-scaled_scales <- attr(scaled_predictors, 'scaled:scale')
-
 ### Define function to construct marginal effect plots
 plot_marginal_effect_bytaxon <- function(variable, n_x = 50, backtransform_log = FALSE, breaks_x) {
-  x_range <- range(w_env_ar_long[[variable]], na.rm = TRUE)
-  x_r_seq <- seq(x_range[1], x_range[2], length.out = n_x)
-  x_r_seq_backtransformed <- scaled_scales[variable] * x_r_seq + scaled_centers[variable]
-    if (backtransform_log) {
-    x_r_seq_backtransformed <- expm1(x_r_seq_backtransformed)
-    x_scale_trans <- 'log1p'
-    } else {
-    x_scale_trans <- 'identity'
-  }
-  
-  pred_names <- c(variable, 'taxon')
+  variable_scaled <- paste0(variable, '_scaled')
+  x_r_seq <- seq(min(w_env_ar_long[[variable_scaled]], na.rm = TRUE), max(w_env_ar_long[[variable_scaled]], na.rm = TRUE), length.out = n_x)
+  x_r_seq_backtransformed <- seq(min(w_env_ar_long[[variable]], na.rm = TRUE), max(w_env_ar_long[[variable]], na.rm = TRUE), length.out = n_x)
+  x_scale_trans <- ifelse(backtransform_log, 'log1p', 'identity')
+    
+  pred_names <- c(variable_scaled, 'taxon')
   pred_dat <- expand.grid(x = x_r_seq, taxon = unique(w_env_ar_long$taxon)) |> setNames(pred_names)
   pred_dat_backtransformed <- expand.grid(x = x_r_seq_backtransformed, taxon = unique(w_env_ar_long$taxon)) 
   
-
   marginal_draws <- brmsmargins(mv_ar_fit, at = pred_dat)
   marginal_summ <- Rutilitybelt::pred_quantile(x_pred = pred_dat_backtransformed, y_pred = marginal_draws$Posterior)
   
@@ -642,7 +635,8 @@ Now to make inferences based on those trends we can eyeball from the plots, let'
 
 ```{r, echo = FALSE}
 plot_emtrends_bytaxon <- function(variable) {
-  trends <- emtrends(mv_ar_fit, ~ taxon, var = variable)
+  variable_scaled <- paste0(variable, '_scaled')
+  trends <- emtrends(mv_ar_fit, ~ taxon, var = variable_scaled)
   trend_draws <- gather_emmeans_draws(trends)
   ggplot(trend_draws, aes(x = taxon, y = .value)) +
     stat_interval(.width = c(.66, .95)) +
@@ -699,7 +693,8 @@ ggplot(season_mean_draws, aes(x = season, y = p)) +
   scale_color_brewer(palette = 'Blues', name = 'credible interval') +
   facet_wrap(~ taxon, scales = 'free_y') +
   labs(y = 'modeled probability of presence') +
-  ggtitle('Marginal means for each season by AR taxon')
+  ggtitle('Marginal means for each season by AR taxon') +
+  theme(legend.position = c(0.85, 0.2))
 ```
 
 ### Marginal trend effect size tables
@@ -710,7 +705,7 @@ Below is the same information from the effect size plots above, but in table for
 print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
 
 table_emtrends <- function(variable) {
-  trends <- emtrends(mv_ar_fit, ~ taxon, var = variable)
+  trends <- emtrends(mv_ar_fit, ~ taxon, var = paste0(variable, '_scaled'))
   trend_quants <- Rutilitybelt::emm_quantile(trends)
   trend_quants %>%
     mutate(estimate = signif(q0.5, 3), ci99 = print_ci(q0.005, q0.995), ci95 = print_ci(q0.025, q0.975), ci90 = print_ci(q0.05, q0.95), ci66 = print_ci(q0.17, q0.83)) %>%
@@ -746,8 +741,7 @@ Rutilitybelt::emm_quantile(season_means) %>%
 This is question 1K. First, let's make a table of how many of each taxon are present. The majority of the taxa present are *Serratia*. Because there are so few presences for the other taxa, I don't think it would be that informative to do the categorical regression where we look at each one separately. So I decided to lump everything together and just look at presence of any beta-lactamase-containing bacterial taxon versus having none at all, for each water sample.
 
 ```{r}
-w_env_bl <- w_env[w_bl, on = w_id_cols]
-season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_bl <- w_env_scaled[w_bl, on = w_id_cols]
 w_env_bl[, season := factor(season, levels = season_order)]
 
 w_env_bl <- w_env_bl[!Bl_species %in% '']
@@ -761,37 +755,21 @@ I combined the data and scaled the predictors appropriately.
 
 ```{r}
 # Put together the data for the present absent regression
-env_cols <- c('temperature', 'pH', 'conductivity', 'turbidity', 'Ecoli_counts')
-w_env_bl_presabs <- w_env_bl[, .(Bl_present = any(Bl_species != 'none')), by = c(w_id_cols, env_cols)]
-
-# Scale the predictors as done previously
-bl_presabs_scaled_predictors <- scale_predictors(w_env_bl_presabs)
-
-bl_presabs_model_data <- cbind(
-  w_env_bl_presabs[, .(sample_no, season, site, Bl_present)],
-  bl_presabs_scaled_predictors)
-
-# Put together the data for the categorical regression
-bl_cat_scaled_predictors <- scale_predictors(w_env_bl)
-
-bl_cat_model_data <- cbind(
-  w_env_bl[, .(sample_no, season, site, Bl_species)],
-  bl_cat_scaled_predictors)
-bl_cat_model_data[, sample_no := factor(sample_no)]
+w_env_bl_presabs <- w_env_bl[, .(Bl_present = any(Bl_species != 'none')), by = c(w_id_cols, variables, paste0(variables, '_scaled'))]
 
 # One-hot encoding for the Bl_species column for the multinomial model
 Bl_species_matrix <- data.table(ID = 1:nrow(w_env_bl), sp = w_env_bl$Bl_species) |>
   dcast(ID ~ sp, length)
 Bl_species_matrix[, ID := NULL]
-w_env_bl_model_data[, Bl_species := do.call(cbind, Bl_species_matrix)]
+#w_env_bl[, Bl_species_matrix := do.call(cbind, Bl_species_matrix)]
 ```
 
 Here is a statistical model for predicting the probability of presence of at least one of any kind of beta-lactamase-containing bacterium in a water sample, based on the same environmental factors as before. It is a logistic regression because the outcome is binary (either yes, there is one, or no there is not).
 
 ```{r}
 bl_bern_fit <- brm(
-  bf(Bl_present ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = bl_presabs_model_data, family = bernoulli(link = 'logit'),
+  bf(Bl_present ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_bl_presabs, family = bernoulli(link = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
@@ -813,7 +791,8 @@ Plot the parameter estimates from the model. Mainly this shows that there are la
 bl_bern_slopes <- bl_bern_fit %>%
   gather_draws(`b_.*`, regex = TRUE) %>%
   filter(!.variable %in% 'b_Intercept') %>%
-  mutate(.variable = gsub('b_', '', .variable))
+  mutate(.variable = gsub('b_', '', .variable),
+         .variable = gsub('_scaled', '', .variable))
 
 # Weak evidence for a positive pH trend, where there is more likelihood to be a beta-lac bacterium where it is more basic. 
 # Also varies by season 
@@ -829,9 +808,6 @@ ggplot(bl_bern_slopes, aes(y = .variable, x = .value)) +
 Next, plot marginal trends for each of the continuous predictors and marginal means for seasons. You can see a mild hint of a trend with pH but otherwise season is the strongest predictor.
 
 ```{r, echo = FALSE}
-scaled_centers <- attr(bl_presabs_scaled_predictors, 'scaled:center')
-scaled_scales <- attr(bl_presabs_scaled_predictors, 'scaled:scale')
-
 bl_bern_marginal_plots <- lapply(variables, plot_marginal_effect, fit = bl_bern_fit, y_label = 'modeled probability of any beta-lactamase presence')
 
 # Plot marginal means for each season
@@ -858,8 +834,7 @@ FIXME: here add the categorical model if needed
 I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
 
 ```{r}
-w_env_arg_cn <- w_env[w_arg_copynum, on = w_id_cols]
-season_order <- c('fall', 'winter', 'spring', 'summer')
+w_env_arg_cn <- w_env_scaled[w_arg_copynum, on = w_id_cols]
 w_env_arg_cn[, season := factor(season, levels = season_order)]
 
 # Visualize distributions of the different ARGs, ignoring predictors.
@@ -884,19 +859,12 @@ ggplot(w_env_arg_long, aes(x = rlt)) +
   scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 0.001, 0.01, 0.1))
 ```
 
-Scale predictors and fit the model. I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
+Fit the model. I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
 
 ```{r}
-# Scale predictors
-arg_scaled_predictors <- scale_predictors(w_env_arg_cn)
-
-arg_model_data <- cbind(
-  w_env_arg_cn[, .(sample_no, season, site, abs_total)],
-  arg_scaled_predictors)
-
 arg_cn_hugamma_fit <- brm(
-  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = arg_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  bf(abs_total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_arg_cn, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
@@ -905,19 +873,19 @@ arg_cn_hugamma_fit <- brm(
 )
 
 arg_cn_hugamma_variablehu_fit <- brm(
-  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site),
-     hu ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = arg_model_data, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  bf(abs_total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site),
+     hu ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_arg_cn, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
-  chains = 4, iter = 3000, warmup = 2000, seed = 71422,
+  chains = 4, iter = 3000, warmup = 2000, seed = 71421,
   file = 'project/arg_cn_hugamma_variablehurdle_fit'
 )
 
 arg_cn_hulognorm_fit <- brm(
-  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = arg_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  bf(abs_total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_arg_cn, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
@@ -926,9 +894,9 @@ arg_cn_hulognorm_fit <- brm(
 )
 
 arg_cn_hulognorm_variablehu_fit <- brm(
-  bf(abs_total ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site),
-     hu ~ temperature + pH + conductivity + turbidity + Ecoli_counts + season + (1|site)), 
-  data = arg_model_data, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  bf(abs_total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site),
+     hu ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_arg_cn, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
   prior = c(
     prior(normal(0, 3), class = b)
   ),
@@ -940,15 +908,15 @@ arg_cn_hulognorm_variablehu_fit <- brm(
 Model comparison is used to determine which model is best. The hurdle-gamma model is best but there is really no difference between the model with additional parameters and the simpler one, so we will keep the simpler one.
 
 ```{r}
-arg_cn_hugamma_fit <- add_criterion(arg_cn_hugamma_fit, 'loo')
-arg_cn_hugamma_variablehu_fit <- add_criterion(arg_cn_hugamma_variablehu_fit, 'loo')
-arg_cn_hulognorm_fit <- add_criterion(arg_cn_hulognorm_fit, 'loo')
-arg_cn_hulognorm_variablehu_fit <- add_criterion(arg_cn_hulognorm_variablehu_fit, 'loo')
+arg_cn_hugamma_fit <- add_criterion(arg_cn_hugamma_fit, 'loo', moment_match = TRUE)
+arg_cn_hugamma_variablehu_fit <- add_criterion(arg_cn_hugamma_variablehu_fit, 'loo', moment_match = TRUE)
+arg_cn_hulognorm_fit <- add_criterion(arg_cn_hulognorm_fit, 'loo', moment_match = TRUE)
+arg_cn_hulognorm_variablehu_fit <- add_criterion(arg_cn_hulognorm_variablehu_fit, 'loo', moment_match = TRUE)
 
 loo_compare(arg_cn_hugamma_fit, arg_cn_hulognorm_fit, arg_cn_hugamma_variablehu_fit, arg_cn_hulognorm_variablehu_fit)
 ```
 
-The model we selected as "best" looks like it fits the data reasonably well, and the more complex one does not appear to be any better.
+The model we selected as "best" looks like it fits the data reasonably well (not perfectly though), but the more complex one does not appear to be any better so that's another reason to stick with the relatively simple one.
 
 ```{r}
 pp_check(arg_cn_hugamma_fit) + scale_x_log10()
@@ -961,7 +929,8 @@ Plot the parameter estimates. Here we see pretty decent evidence that there is a
 arg_cn_slopes <- arg_cn_hugamma_fit %>%
   gather_draws(`b_.*`, regex = TRUE) %>%
   filter(!.variable %in% 'b_Intercept') %>%
-  mutate(.variable = gsub('b_', '', .variable))
+  mutate(.variable = gsub('b_', '', .variable)) %>%
+  mutate(.variable = gsub('_scaled', '', .variable))
 
 # We see decent evidence for a negative pH trend (more ARG copy numbers in acidic water)
 # and a positive Ecoli trend (more ARG copy numbers in samples with more Ecoli)
@@ -979,9 +948,6 @@ Next, plot the marginal trends for each of the continuous predictors, and the ma
 
 ```{r, echo = FALSE}
 # Plot marginal effects for each of the continuous predictors
-scaled_centers <- attr(arg_scaled_predictors, 'scaled:center')
-scaled_scales <- attr(arg_scaled_predictors, 'scaled:scale')
-
 arg_cn_marginal_plots <- lapply(variables, plot_marginal_effect, fit = arg_cn_hugamma_fit, y_label = 'modeled total AR gene copy numbers', y_scale_trans = 'log10')
 
 # Plot marginal means for each season
@@ -994,8 +960,8 @@ arg_cn_season_plot <- ggplot(arg_cn_season_means, aes(x = season, y = .value)) +
   stat_pointinterval(geom = "point", size = 2) +
   scale_color_brewer(palette = 'Blues', name = 'credible interval') +
   scale_y_log10(name = 'modeled total AR gene copy numbers') +
-  theme(legend.position = c(0.1, 0.8)) 
+  theme(legend.position = 'none') 
 
-plot_grid(plotlist = c(bl_bern_marginal_plots, list(bl_bern_season_plot)), nrow = 3)
+plot_grid(plotlist = c(arg_cn_marginal_plots, list(arg_cn_season_plot)), nrow = 3)
 ```
 
