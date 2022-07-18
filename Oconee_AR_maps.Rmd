@@ -5,13 +5,15 @@ date: "`r Sys.Date()`"
 output: 
   html_document:
       css: "gtstyle.css"
+      toc: true
+      toc_depth: 2
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
-## Summary
+# Summary
 
 In this document, I put together the Upper Oconee data and got some external data to make maps. I also made some exploratory data analysis plots and then fit a formal statistical model. All of this focuses on Question 1 from your original list of research questions: do environmental factors influence the presence and absence of antibiotic resistant taxa? Basically, the answers are not that different from the analysis that the UGA statistician did, which is a great thing (it means the results are robust and patterns tend to come through regardless of what analysis is used) but on the other hand I also think there is now much more nuance.
 
@@ -20,6 +22,8 @@ I suppressed the display of some of the code but I kept some of the more importa
 Note: I now use a model that accounts for the non-independence of observations from the same site and from the same time. However I did not actually incorporate the spatial locations of the sites into the model explicitly. I don't think that is worth the additional effort it would take, and is unlikely to show anything new. So the question moving forward is what to do next. I should hopefully ultimately have time to put this same approach toward the other parts of your research questions beyond Question 1, but I wanted to share this with you all first to get your opinion.
 
 OK, let's get to it.
+
+# Initial setup
 
 ## Processing the spatial data
 
@@ -304,7 +308,7 @@ save_objs <- c("wastewater_sample_antibiotic_conc",
 lapply(save_objs, function(x) fwrite(get(x), file.path('project/csv', paste0(x, '.csv'))))
 ```
 
-## Exploratory data visualization
+# Exploratory data visualization
 
 Here are some initial plots to take a look at what is going on with the data.
 
@@ -333,7 +337,7 @@ season_order <- c('fall', 'winter', 'spring', 'summer')
 w_env[, season := factor(season, levels = season_order)]
 ```
 
-### Maps of environmental variables
+## Maps of environmental variables
 
 The environmental variables may vary over time and space. Let's make some maps of these variables (potential predictor variables) to see how they might vary. Join the spatial and environmental data together.
 
@@ -412,9 +416,9 @@ ggplot() +
 ```
 
 
-### E. coli counts, environmental variables, and presence of AR taxa
+## Graphs of presence of AR taxa vs. environmental variables
 
-Show seasonal trends in presence-absence of different AR taxa, ignoring environmental variables for now. Here we see that the counts of presences of AR *E. coli* and *Enterococcus* are relatively small so there is not very much basis to detect a trend. However for *Salmonella*  we see all but 1 of the 11 presences were from the fall. The majority of ESBL was observed in the winter, and CRE in the summer.
+Show seasonal trends in presence-absence of different AR taxa averaged across other environmental variables. Here we see that the counts of presences of AR *E. coli* and *Enterococcus* are relatively small so there is not very much basis to detect a trend. However for *Salmonella*  we see all but 1 of the 11 presences were from the fall. The majority of ESBL was observed in the winter, and CRE in the summer.
 
 ```{r, echo = FALSE}
 orange_scale <- scale_fill_brewer(palette = 'Oranges', name = 'presence', labels = c('absent', 'present')) 
@@ -484,7 +488,9 @@ ggplot(w_ar_pres_abs[!is.na(present) & !is.na(Ecoli_counts)], aes(x = cut(Ecoli_
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
 ```
 
-## Statistical model
+# Data analysis: AR presence versus environmental variables
+
+## Fit statistical model
 
 Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by adding an additional categorical fixed effect for season to the model). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
 
@@ -736,7 +742,7 @@ Rutilitybelt::emm_quantile(season_means) %>%
   )
 ```
 
-## Presence of Beta-lactamase gene-containing bacteria
+# Data analysis: Presence of Beta-lactamase gene-containing bacteria
 
 This is question 1K. First, let's make a table of how many of each taxon are present. The majority of the taxa present are *Serratia*. Because there are so few presences for the other taxa, I don't think it would be that informative to do the categorical regression where we look at each one separately. So I decided to lump everything together and just look at presence of any beta-lactamase-containing bacterial taxon versus having none at all, for each water sample.
 
@@ -764,6 +770,8 @@ Bl_species_matrix[, ID := NULL]
 #w_env_bl[, Bl_species_matrix := do.call(cbind, Bl_species_matrix)]
 ```
 
+## Fit statistical model
+
 Here is a statistical model for predicting the probability of presence of at least one of any kind of beta-lactamase-containing bacterium in a water sample, based on the same environmental factors as before. It is a logistic regression because the outcome is binary (either yes, there is one, or no there is not).
 
 ```{r}
@@ -783,6 +791,8 @@ The model converges well and fits the data well too as this plot shows (the pred
 ```{r}
 pp_check(bl_bern_fit, type="bars", ndraws = 100)
 ```
+
+## Examine model output
 
 Plot the parameter estimates from the model. Mainly this shows that there are large seasonal differences in presence of beta-lac containing bacteria. Other trends are weak.
 
@@ -829,9 +839,9 @@ FIXME: here add tables of results
 
 FIXME: here add the categorical model if needed
 
-## Copy numbers for antibiotic resistance genes
+# Data analysis: Copy numbers of antibiotic resistance genes
 
-I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
+This is question 1L. I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
 
 ```{r}
 w_env_arg_cn <- w_env_scaled[w_arg_copynum, on = w_id_cols]
@@ -858,6 +868,8 @@ ggplot(w_env_arg_long, aes(x = rlt)) +
   facet_wrap(~ ARG, scales = 'free') +
   scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 0.001, 0.01, 0.1))
 ```
+
+## Fit statistical model
 
 Fit the model. I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
 
@@ -923,6 +935,8 @@ pp_check(arg_cn_hugamma_fit) + scale_x_log10()
 pp_check(arg_cn_hugamma_variablehu_fit) + scale_x_log10()
 ```
 
+## Examine model output
+
 Plot the parameter estimates. Here we see pretty decent evidence that there is a negative pH trend so that more ARG copy numbers are found in more acidic samples, as well as solid evidence that more ARG copy numbers are found in samples with higher counts of *E. coli*. The seasonal trends do not look as strong as for some of the other response variables.
 
 ```{r, echo = FALSE}
@@ -965,3 +979,139 @@ arg_cn_season_plot <- ggplot(arg_cn_season_means, aes(x = season, y = .value)) +
 plot_grid(plotlist = c(arg_cn_marginal_plots, list(arg_cn_season_plot)), nrow = 3)
 ```
 
+FIXME: Add tables of output here
+
+# Data analysis: antibiotic concentrations
+
+This is question 1M. First let's prepare the data and take a look at the distributions of each of the antibiotic concentrations. Use a pseudo-log transformation on the x-axis so we can see the spread of values on a log scale but also see the zero values. They are all non-negative (positive values with zeros).
+
+```{r}
+w_env_ant_conc <- w_env_scaled[w_antibiotic_conc, on = w_id_cols]
+w_env_ant_conc[, season := factor(season, levels = season_order)]
+
+# Visualize distributions of the different antibiotics, ignoring predictors.
+
+antibiotic_names <- setdiff(names(w_antibiotic_conc), w_id_cols)
+w_env_ant_conc_long <- melt(w_env_ant_conc, id.vars = w_id_cols, measure.vars = antibiotic_names, variable.name = 'antibiotic', value.name = 'concentration')
+```
+
+As with the AR gene copy number analysis above, we see that there are a lot of different individual antibiotics but probably insufficient data to look at the relationship between environmental variables and any one specific antibiotic. Therefore we will look at the total antibiotic concentration. Again because it is positive values with zeros mixed in, we will use a hurdle model, either hurdle gamma or hurdle lognormal. 
+
+```{r, echo = FALSE}
+# Pseudolog is used to keep zeroes in
+ggplot(w_env_ant_conc_long, aes(x = concentration)) +
+  geom_density() +
+  facet_wrap(~ antibiotic, scales = 'free_y') +
+  scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 1, 10, 100, 1000))
+```
+
+## Fit statistical model
+
+As we did in part 1L above, we will fit a hurdle-gamma and hurdle-lognormal model, each with and without some additional parameters to make the proportion of zeroes either fixed or variable by treatment. Then we will use model comparison to see which is the best fit to the data.
+
+```{r}
+ant_conc_hugamma_fit <- brm(
+  bf(total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_ant_conc, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 70922,
+  file = 'project/ant_conc_hugamma_fit'
+)
+
+ant_conc_hugamma_variablehu_fit <- brm(
+  bf(total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site),
+     hu ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_ant_conc, family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 70921,
+  file = 'project/ant_conc_hugamma_variablehu_fit'
+)
+
+ant_conc_hulognorm_fit <- brm(
+  bf(total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_ant_conc, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 70920,
+  file = 'project/ant_conc_hulognorm_fit'
+)
+
+ant_conc_hulognorm_variablehu_fit <- brm(
+  bf(total ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site),
+     hu ~ temperature_scaled + pH_scaled + conductivity_scaled + turbidity_scaled + Ecoli_counts_scaled + season + (1|site)), 
+  data = w_env_ant_conc, family = hurdle_lognormal(link = 'identity', link_sigma = 'log', link_hu = 'logit'),
+  prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 70923,
+  file = 'project/ant_conc_hulognorm_variablehu_fit'
+)
+```
+
+As before, the gamma model is best and the simpler model is a little better than the more complex one that allows the probability of exactly zero to vary more. So we will go with that model.
+
+```{r}
+ant_conc_hugamma_fit <- add_criterion(ant_conc_hugamma_fit, 'loo', moment_match = TRUE)
+ant_conc_hugamma_variablehu_fit <- add_criterion(ant_conc_hugamma_variablehu_fit, 'loo', moment_match = TRUE)
+ant_conc_hulognorm_fit <- add_criterion(ant_conc_hulognorm_fit, 'loo', moment_match = TRUE)
+ant_conc_hulognorm_variablehu_fit <- add_criterion(ant_conc_hulognorm_variablehu_fit, 'loo', moment_match = TRUE)
+
+loo_compare(ant_conc_hugamma_fit, ant_conc_hugamma_variablehu_fit, ant_conc_hulognorm_fit, ant_conc_hulognorm_variablehu_fit) 
+
+```
+
+The posterior predictive check diagnostic looks pretty good for the simpler model.
+
+```{r}
+pp_check(ant_conc_hugamma_fit) + scale_x_log10()
+pp_check(ant_conc_hugamma_variablehu_fit) + scale_x_log10()
+```
+
+## Examine model output
+
+Plot parameter estimates. There is essentially no trend for any of the predictor variables except for seasonal differences.
+
+```{r, echo = FALSE}
+# Plot parameter estimates from hurdle gamma fit. We don't have separate ones by taxon so this is simpler.
+ant_conc_slopes <- ant_conc_hugamma_fit %>%
+  gather_draws(`b_.*`, regex = TRUE) %>%
+  filter(!.variable %in% 'b_Intercept') %>%
+  mutate(.variable = gsub('b_', '', .variable)) %>%
+  mutate(.variable = gsub('_scaled', '', .variable))
+
+# Essentially no trend except for differences between seasons.
+ggplot(ant_conc_slopes, aes(y = .variable, x = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'gray50') +
+  labs(x = 'parameter estimate') +
+  theme(axis.title.y = element_blank(), legend.position = c(0.85, 0.15))
+```
+
+Plot the marginal trends for each continuous predictor, and the means for the seasons. Again, we see evidence for seasonal difference but basically none for the other predictors having any effect.
+
+```{r, echo = FALSE}
+ant_conc_marginal_plots <- lapply(variables, plot_marginal_effect, fit = ant_conc_hugamma_fit, y_label = 'modeled total antibiotic concentration', y_scale_trans = 'log10')
+
+# Plot marginal means for each season
+ant_conc_season_means <- emmeans(ant_conc_hugamma_fit, ~ season) %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value))
+
+ant_conc_season_plot <- ggplot(ant_conc_season_means, aes(x = season, y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_pointinterval(geom = "point", size = 2) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled total antibiotic concentration') +
+  theme(legend.position = c(0.1, 0.8))
+
+plot_grid(plotlist = c(ant_conc_marginal_plots, list(ant_conc_season_plot)), nrow = 3)
+```
+
+FIXME: Put tables of estimates here too
