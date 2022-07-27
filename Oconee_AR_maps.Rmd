@@ -1115,3 +1115,81 @@ plot_grid(plotlist = c(ant_conc_marginal_plots, list(ant_conc_season_plot)), nro
 ```
 
 FIXME: Put tables of estimates here too
+
+\newpage
+
+# Wastewater samples
+
+## 2a-f. Change in presence of different AR taxa in influent versus effluent
+
+Now let's look at question 2. First, for the presence-absence questions in influent versus effluent, let's make some tables. Here, you could suppose that the wastewater treatment was effective if the taxon is present in influent but absent in effluent. If it is absent in both, that is fine. If it is present in both, the treatment was ineffective. If it is absent in influent but present in effluent, that is a bad sign because either it was not detected in the influent or somehow was added through the treatment process!
+
+```{r}
+ww_ar_pa <- ww_ar[, .(season, site, type, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)]
+taxa_names <- c('Ecoli', 'Salmonella', 'Enterococcus', 'ESBL', 'CRE')
+setnames(ww_ar_pa, c('season', 'site', 'type', taxa_names))
+
+ww_ar_pa[, (taxa_names) := lapply(.SD, function(x) ifelse(x, 'present', 'absent')), .SDcols = taxa_names]
+ww_ar_pa[, (taxa_names) := lapply(.SD, factor, levels = c('absent', 'present')), .SDcols = taxa_names]
+
+ww_ar_pa_wide <- dcast(ww_ar_pa, season + site ~ type, value.var = taxa_names)
+
+with(ww_ar_pa_wide, table(Ecoli_influent, Ecoli_effluent))
+with(ww_ar_pa_wide, table(Salmonella_influent, Salmonella_effluent))
+with(ww_ar_pa_wide, table(Enterococcus_influent, Enterococcus_effluent))
+with(ww_ar_pa_wide, table(ESBL_influent, ESBL_effluent))
+with(ww_ar_pa_wide, table(CRE_influent, CRE_effluent))
+```
+
+Honestly, I do not really think this can be pursued further with statistics. Yes, you could do statistical tests on it, but it is not recommended that the chi-squared test be used if *any* of the values in the four cells of the 2x2 contingency table are <5. We do not have even a single value of 5 or greater for any of the cells across all five of these tables. I do not think the UGA statistician did this correctly because they did not account for the paired samples. It would be required to use a McNemar Chi-squared test in that case, I believe.
+
+Also make a table for beta-lactamase gene-containing bacteria (if any are present at all).
+
+```{r}
+ww_bl_pa <- ww_bl[, .(Bl = ifelse(any(Bl_species != '-'), 'present', 'absent')), by = .(season, site, type)]
+ww_bl_sp_wide <- dcast(ww_bl_pa, season + site ~ type)
+
+with(ww_bl_sp_wide, table(influent, effluent))
+```
+
+Here, the same issue appears where we have too little data.
+
+## 2g-j. Change in ARG concentrations in influent vs. effluent
+
+I agree with the UGA statistician that question 2g does not have enough data to answer. I will skip to question 2h because this is basically the same question but taking advantage of the continuous variable of copy numbers instead of reducing it down to a presence-absence question.
+
+However I am doing this as a pre-post design that takes into account the non-independence of seasons and sites, because I think it is a better way of doing it. Also, let's fit everything in one model too.
+
+Reshape the copy number data to a better format.
+
+```{r}
+ww_arg_copynum[, id := factor(rep(1:12, each = 2))]
+ww_arg_long <- melt(ww_arg_copynum, id.vars = c('id', 'sample_no', 'season', 'site', 'type'), value.name = 'copy_num')
+ww_arg_long <- separate(ww_arg_long, variable, into = c('count_type', 'gene'), sep = '_')
+
+ww_arg_abs <- ww_arg_long[count_type == 'abs']
+ww_arg_rlt <- ww_arg_long[count_type == 'rlt']
+```
+
+```{r}
+ww_arg_abs_fit <- brm(
+  copy_num ~ type + season + gene + gene:type + season:type + (1|site) + (1|id:site),
+   data = ww_arg_abs[!gene %in% 'total'], family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+   prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 5000, warmup = 4000, seed = 72722,
+  file = 'project/ww_arg_abs_fit'
+)
+
+ww_arg_rlt_fit <- brm(
+  copy_num ~ type + season + gene + gene:type + season:type + (1|site) + (1|id:site),
+   data = ww_arg_rlt[!gene %in% 'total'], family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+   prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 5000, warmup = 4000, seed = 72723,
+  file = 'project/ww_arg_rlt_fit'
+)
+```
+
