@@ -1,5 +1,5 @@
 ---
-title: "Upper Oconee AR maps and analysis"
+title: "Upper Oconee AR analysis"
 author: "Quentin D. Read"
 date: "`r Sys.Date()`"
 output: 
@@ -1198,7 +1198,7 @@ ant_conc_season_means %>%
 
 ## Analysis for questions 2a-f. Change in presence of different AR taxa in influent versus effluent
 
-Now let's look at question 2. First, for the presence-absence questions in influent versus effluent, let's make some tables. Here, you could suppose that the wastewater treatment was effective if the taxon is present in influent but absent in effluent. If it is absent in both, that is fine. If it is present in both, the treatment was ineffective. If it is absent in influent but present in effluent, that is a bad sign because either it was not detected in the influent or somehow was added through the treatment process!
+Now let's look at question 2. First, for the presence-absence questions in influent versus effluent, let's make some tables. Here, you could suppose that the wastewater treatment was effective if the taxon is present in influent but absent in effluent. If it is absent in both, that is fine. If it is present in both, the treatment was ineffective. If it is absent in influent but present in effluent, that is a bad sign because either it was not detected in the influent or somehow was added through the treatment process! We do observe that in some cases.
 
 ```{r}
 ww_ar_pa <- ww_ar[, .(season, site, type, AR_Ecoli_presence, Salmonella_presence, Enterococcus_presence, ESBL, CRE)]
@@ -1247,29 +1247,66 @@ ww_arg_abs <- ww_arg_long[count_type == 'abs']
 ww_arg_rlt <- ww_arg_long[count_type == 'rlt']
 ```
 
-The models converge with just a couple of divergent transitions that we can probably safely ignore.
+### Fit statistical models
+
+The models include main effects for influent/effluent, season, and which AR gene it is, and interactions between influent/effluent x gene, and influent/effluent x season. There is a random intercept for each ID (combination of season and site). There are no data for summer so we are distinguishing three season effects.
 
 ```{r}
 ww_arg_abs_fit <- brm(
-  copy_num ~ type + season + gene + gene:type + season:type + (1|site) + (1|id:site),
+  copy_num ~ type + season + gene + gene:type + season:type + (1|id:site),
    data = ww_arg_abs[!gene %in% 'total'], family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
    prior = c(
     prior(normal(0, 3), class = b)
   ),
-  control = list(adapt_delta = 0.95),
-  chains = 4, iter = 5000, warmup = 4000, seed = 72722,
+  chains = 4, iter = 3000, warmup = 2000, seed = 72722,
   file = 'project/ww_arg_abs_fit'
 )
 
 ww_arg_rlt_fit <- brm(
-  copy_num ~ type + season + gene + gene:type + season:type + (1|site) + (1|id:site),
+  copy_num ~ type + season + gene + gene:type + season:type + (1|id:site),
    data = ww_arg_rlt[!gene %in% 'total'], family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
    prior = c(
     prior(normal(0, 3), class = b)
   ),
-  control = list(adapt_delta = 0.95),
-  chains = 4, iter = 5000, warmup = 4000, seed = 72723,
+  chains = 4, iter = 3000, warmup = 2000, seed = 72723,
   file = 'project/ww_arg_rlt_fit'
 )
+```
+
+As usual check convergence and do a posterior predictive check, for both the absolute and relative models. All looks good.
+
+```{r}
+max(rhat(ww_arg_abs_fit))
+max(rhat(ww_arg_rlt_fit))
+pp_check(ww_arg_abs_fit) + scale_x_log10()
+pp_check(ww_arg_rlt_fit) + scale_x_log10()
+```
+
+### Estimated marginal mean and contrast plots
+
+Calculate and plot estimated marginal means for the absolute and relative ARG copy numbers. We will show the overall effect of influent vs. effluent, and show the effects separately for each season and for each gene. Also, plot contrasts within season and within gene.
+
+The wastewater treatment greatly reduces the copy numbers, both absolute and relative, of the AR genes. We have evidence for this effect in all genes. Interestingly, the strength of the effect differs somewhat by season.
+
+```{r, echo = FALSE}
+ww_arg_abs_emm_type <- emmeans(ww_arg_abs_fit, ~ type, type = 'response')
+ww_arg_abs_emm_season <- emmeans(ww_arg_abs_fit, ~ type | season, type = 'response')
+ww_arg_abs_emm_gene <- emmeans(ww_arg_abs_fit, ~ type | gene, type = 'response')
+
+ww_arg_rlt_emm_type <- emmeans(ww_arg_rlt_fit, ~ type, type = 'response')
+ww_arg_rlt_emm_season <- emmeans(ww_arg_rlt_fit, ~ type | season, type = 'response')
+ww_arg_rlt_emm_gene <- emmeans(ww_arg_rlt_fit, ~ type | gene, type = 'response')
+
+# FIXME If any contrasts need to be done, include them here.
+
+# FIXME Include the plots here.
+```
+
+# Estimated marginal mean and contrast tables
+
+This is the same information as in the plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
+
+```{r}
+# FIXME Include the tables here.
 ```
 
