@@ -308,11 +308,11 @@ save_objs <- c("wastewater_sample_antibiotic_conc",
 lapply(save_objs, function(x) fwrite(get(x), file.path('project/csv', paste0(x, '.csv'))))
 ```
 
-# Exploratory data visualization
+# Question 1. Do environmental factors predict AR taxa, AR genes, or antibiotic concentrations?
 
-Here are some initial plots to take a look at what is going on with the data.
+First I am going to make some initial plots to take a look at what is going on with the data for Question 1.
 
-First reload the data that was processed previously to a clean and usable form. Also load the spatial data. Get rid of the temperature data point of 32C in winter that was probably measured in error.
+Reload the data that was processed previously to a clean and usable form. Also load the spatial data. Get rid of the temperature data point of 32C in winter that was probably measured in error.
 
 ```{r}
 w_antibiotic_conc <- fread('project/csv/water_sample_antibiotic_conc.csv')
@@ -488,9 +488,9 @@ ggplot(w_ar_pres_abs[!is.na(present) & !is.na(Ecoli_counts)], aes(x = cut(Ecoli_
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
 ```
 
-# Data analysis: AR presence versus environmental variables
+## Analysis for questions 1a-1j: AR presence-absence versus environmental variables
 
-## Fit statistical model
+### Description of statistical model
 
 Now here is a statistical model where I try to account for a number of factors to see whether environmental factors (I am including *E. coli* counts in with the environmental factors) influence the joint presence and absence of different AR taxa. We will try to put all the AR taxa into one model as a multivariate response because the different environmental factors may affect their presence-absence probability similarly. Further, we will account for any seasonality in the data (currently, in a quick and dirty way by adding an additional categorical fixed effect for season to the model). Finally, we will account for the repeated measures structure of the data, where the data was sampled multiple times per site. We will not account for the spatial location of the different sites explicitly; instead, we will just give each site a random intercept.
 
@@ -554,7 +554,7 @@ Quick diagnostic to see if the model fits the data well: a posterior predictive 
 pp_check(mv_ar_fit, type = 'bars', ndraws = 100)
 ```
 
-## Examine model output
+### Examine model output
 
 Now that we have this model and know that it has converged and is a good fit, we can play with the output and make whatever inference we want. The most interesting things to plot will be the parameter estimates on the interaction terms, and interaction plots showing a line for the probability of presence of each taxon, compared with a particular environmental factor. Note: the model doesn't account for any multi-way interactions between environmental predictors, for instance between taxon, temperature and pH. Those kind of interactions could be included, at the cost of having a really complicated model.
 
@@ -710,8 +710,8 @@ Below is the same information from the effect size plots above, but in table for
 ```{r, echo = FALSE}
 print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
 
-table_emtrends <- function(variable) {
-  trends <- emtrends(mv_ar_fit, ~ taxon, var = paste0(variable, '_scaled'))
+table_emtrends <- function(variable, fit) {
+  trends <- emtrends(fit, ~ taxon, var = paste0(variable, '_scaled'))
   trend_quants <- Rutilitybelt::emm_quantile(trends)
   trend_quants %>%
     mutate(estimate = signif(q0.5, 3), ci99 = print_ci(q0.005, q0.995), ci95 = print_ci(q0.025, q0.975), ci90 = print_ci(q0.05, q0.95), ci66 = print_ci(q0.17, q0.83)) %>%
@@ -721,11 +721,11 @@ table_emtrends <- function(variable) {
     tab_options(column_labels.font.weight = 'bold')
 }
 
-table_emtrends(variable = 'temperature')
-table_emtrends(variable = 'pH')
-table_emtrends(variable = 'turbidity')
-table_emtrends(variable = 'conductivity')
-table_emtrends(variable = 'Ecoli_counts')
+table_emtrends(variable = 'temperature', fit = mv_ar_fit)
+table_emtrends(variable = 'pH', fit = mv_ar_fit)
+table_emtrends(variable = 'turbidity', fit = mv_ar_fit)
+table_emtrends(variable = 'conductivity', fit = mv_ar_fit)
+table_emtrends(variable = 'Ecoli_counts', fit = mv_ar_fit)
 
 Rutilitybelt::emm_quantile(season_means) %>%
   arrange(season, taxon) %>%
@@ -742,9 +742,9 @@ Rutilitybelt::emm_quantile(season_means) %>%
   )
 ```
 
-# Data analysis: Presence of Beta-lactamase gene-containing bacteria
+## Analysis for question 1k: Presence of Beta-lactamase gene-containing bacteria
 
-This is question 1K. First, let's make a table of how many of each taxon are present. The majority of the taxa present are *Serratia*. Because there are so few presences for the other taxa, I don't think it would be that informative to do the categorical regression where we look at each one separately. So I decided to lump everything together and just look at presence of any beta-lactamase-containing bacterial taxon versus having none at all, for each water sample.
+First, let's make a table of how many of each taxon are present. The majority of the taxa present are *Serratia*. Because there are so few presences for the other taxa, I don't think it would be that informative to do the categorical regression where we look at each one separately. So I decided to lump everything together and just look at presence of any beta-lactamase-containing bacterial taxon versus having none at all, for each water sample.
 
 ```{r}
 w_env_bl <- w_env_scaled[w_bl, on = w_id_cols]
@@ -770,7 +770,7 @@ Bl_species_matrix[, ID := NULL]
 #w_env_bl[, Bl_species_matrix := do.call(cbind, Bl_species_matrix)]
 ```
 
-## Fit statistical model
+### Fit statistical model
 
 Here is a statistical model for predicting the probability of presence of at least one of any kind of beta-lactamase-containing bacterium in a water sample, based on the same environmental factors as before. It is a logistic regression because the outcome is binary (either yes, there is one, or no there is not).
 
@@ -792,7 +792,7 @@ The model converges well and fits the data well too as this plot shows (the pred
 pp_check(bl_bern_fit, type="bars", ndraws = 100)
 ```
 
-## Examine model output
+### Examine model output
 
 Plot the parameter estimates from the model. Mainly this shows that there are large seasonal differences in presence of beta-lac containing bacteria. Other trends are weak.
 
@@ -835,13 +835,38 @@ bl_bern_season_plot <- ggplot(bl_bern_season_means, aes(x = season, y = .value))
 plot_grid(plotlist = c(bl_bern_marginal_plots, list(bl_bern_season_plot)), nrow = 3)
 ```
 
-FIXME: here add tables of results
+### Trend effect size tables
 
-FIXME: here add the categorical model if needed
+Below is the same information from the effect size plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
 
-# Data analysis: Copy numbers of antibiotic resistance genes
+```{r, echo = FALSE}
+bl_bern_slopes %>%
+  filter(!grepl('season', .variable)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(.variable, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(.variable, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated environmental effects on beta-lactamase presence')) %>%
+  cols_label(.variable = 'variable', ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
 
-This is question 1L. I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
+bl_bern_season_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated mean beta-lactamase presence by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+```
+
+*note*: I am not currently including results for the categorical model. If you decide that it is important to look at presence-absence of specific taxa of beta-lactamase gene-containing bacteria, please let me know and I can work up those results. However, because the majority of the beta-lactamase bacteria were *Serratia* and there were only a handful of other ones, the results for *Serratia* will be similar to the overall results. The results for the rarer taxa will show at best weak evidence for any environmental associations because there are so few presences to fit the model on.
+
+## Analysis for question 1l: Copy numbers of antibiotic resistance genes
+
+I am going to use the conclusion made by the UGA statistician that the absolute and relative copy numbers basically have the same distribution so it does not matter which one you analyze. I will use the absolute copy numbers. Here are some plots to show this. First process the data.
 
 ```{r}
 w_env_arg_cn <- w_env_scaled[w_arg_copynum, on = w_id_cols]
@@ -869,9 +894,9 @@ ggplot(w_env_arg_long, aes(x = rlt)) +
   scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 0.001, 0.01, 0.1))
 ```
 
-## Fit statistical model
+### Fit statistical model
 
-Fit the model. I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
+I am trying out a hurdle gamma and hurdle lognormal model. For each distribution, one of the models has an additional component that allows the probability of exactly zero to vary as a function of all the random and fixed effects. 
 
 ```{r}
 arg_cn_hugamma_fit <- brm(
@@ -935,7 +960,7 @@ pp_check(arg_cn_hugamma_fit) + scale_x_log10()
 pp_check(arg_cn_hugamma_variablehu_fit) + scale_x_log10()
 ```
 
-## Examine model output
+### Examine model output
 
 Plot the parameter estimates. Here we see pretty decent evidence that there is a negative pH trend so that more ARG copy numbers are found in more acidic samples, as well as solid evidence that more ARG copy numbers are found in samples with higher counts of *E. coli*. The seasonal trends do not look as strong as for some of the other response variables.
 
@@ -979,11 +1004,37 @@ arg_cn_season_plot <- ggplot(arg_cn_season_means, aes(x = season, y = .value)) +
 plot_grid(plotlist = c(arg_cn_marginal_plots, list(arg_cn_season_plot)), nrow = 3)
 ```
 
-FIXME: Add tables of output here
+### Trend effect size tables
 
-# Data analysis: antibiotic concentrations
+Below is the same information from the effect size plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
 
-This is question 1M. First let's prepare the data and take a look at the distributions of each of the antibiotic concentrations. Use a pseudo-log transformation on the x-axis so we can see the spread of values on a log scale but also see the zero values. They are all non-negative (positive values with zeros).
+```{r, echo = FALSE}
+arg_cn_slopes %>%
+  filter(!grepl('season', .variable)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(.variable, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(.variable, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated environmental effects on ARG copy numbers')) %>%
+  cols_label(.variable = 'variable', ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+arg_cn_season_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated mean ARG copy numbers by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+```
+
+
+## Analysis for question 1m: antibiotic concentrations
+
+First let's prepare the data and take a look at the distributions of each of the antibiotic concentrations. Use a pseudo-log transformation on the x-axis so we can see the spread of values on a log scale but also see the zero values. They are all non-negative (positive values with zeros).
 
 ```{r}
 w_env_ant_conc <- w_env_scaled[w_antibiotic_conc, on = w_id_cols]
@@ -1005,7 +1056,7 @@ ggplot(w_env_ant_conc_long, aes(x = concentration)) +
   scale_x_continuous(trans = 'pseudo_log', breaks = c(0, 1, 10, 100, 1000))
 ```
 
-## Fit statistical model
+### Fit statistical model
 
 As we did in part 1L above, we will fit a hurdle-gamma and hurdle-lognormal model, each with and without some additional parameters to make the proportion of zeroes either fixed or variable by treatment. Then we will use model comparison to see which is the best fit to the data.
 
@@ -1072,7 +1123,7 @@ pp_check(ant_conc_hugamma_fit) + scale_x_log10()
 pp_check(ant_conc_hugamma_variablehu_fit) + scale_x_log10()
 ```
 
-## Examine model output
+### Examine model output
 
 Plot parameter estimates. There is essentially no trend for any of the predictor variables except for seasonal differences.
 
@@ -1114,13 +1165,38 @@ ant_conc_season_plot <- ggplot(ant_conc_season_means, aes(x = season, y = .value
 plot_grid(plotlist = c(ant_conc_marginal_plots, list(ant_conc_season_plot)), nrow = 3)
 ```
 
-FIXME: Put tables of estimates here too
+### Trend effect size tables
+
+Below is the same information from the effect size plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
+
+```{r, echo = FALSE}
+ant_conc_slopes %>%
+  filter(!grepl('season', .variable)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(.variable, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(.variable, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated environmental effects on antibiotic concentration')) %>%
+  cols_label(.variable = 'variable', ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ant_conc_season_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Estimated mean antibiotic concentration by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+```
 
 \newpage
 
 # Wastewater samples
 
-## 2a-f. Change in presence of different AR taxa in influent versus effluent
+## Analysis for questions 2a-f. Change in presence of different AR taxa in influent versus effluent
 
 Now let's look at question 2. First, for the presence-absence questions in influent versus effluent, let's make some tables. Here, you could suppose that the wastewater treatment was effective if the taxon is present in influent but absent in effluent. If it is absent in both, that is fine. If it is present in both, the treatment was ineffective. If it is absent in influent but present in effluent, that is a bad sign because either it was not detected in the influent or somehow was added through the treatment process!
 
@@ -1154,7 +1230,7 @@ with(ww_bl_sp_wide, table(influent, effluent))
 
 Here, the same issue appears where we have too little data.
 
-## 2g-j. Change in ARG concentrations in influent vs. effluent
+## Analysis for questions 2g-j. Change in ARG concentrations in influent vs. effluent
 
 I agree with the UGA statistician that question 2g does not have enough data to answer. I will skip to question 2h because this is basically the same question but taking advantage of the continuous variable of copy numbers instead of reducing it down to a presence-absence question.
 
@@ -1171,6 +1247,8 @@ ww_arg_abs <- ww_arg_long[count_type == 'abs']
 ww_arg_rlt <- ww_arg_long[count_type == 'rlt']
 ```
 
+The models converge with just a couple of divergent transitions that we can probably safely ignore.
+
 ```{r}
 ww_arg_abs_fit <- brm(
   copy_num ~ type + season + gene + gene:type + season:type + (1|site) + (1|id:site),
@@ -1178,6 +1256,7 @@ ww_arg_abs_fit <- brm(
    prior = c(
     prior(normal(0, 3), class = b)
   ),
+  control = list(adapt_delta = 0.95),
   chains = 4, iter = 5000, warmup = 4000, seed = 72722,
   file = 'project/ww_arg_abs_fit'
 )
@@ -1188,6 +1267,7 @@ ww_arg_rlt_fit <- brm(
    prior = c(
     prior(normal(0, 3), class = b)
   ),
+  control = list(adapt_delta = 0.95),
   chains = 4, iter = 5000, warmup = 4000, seed = 72723,
   file = 'project/ww_arg_rlt_fit'
 )
