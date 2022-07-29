@@ -1192,8 +1192,6 @@ ant_conc_season_means %>%
   tab_options(column_labels.font.weight = 'bold')
 ```
 
-\newpage
-
 # Wastewater samples
 
 ## Analysis for questions 2a-f. Change in presence of different AR taxa in influent versus effluent
@@ -1286,21 +1284,101 @@ pp_check(ww_arg_rlt_fit) + scale_x_log10()
 
 Calculate and plot estimated marginal means for the absolute and relative ARG copy numbers. We will show the overall effect of influent vs. effluent, and show the effects separately for each season and for each gene. Also, plot contrasts within season and within gene.
 
-The wastewater treatment greatly reduces the copy numbers, both absolute and relative, of the AR genes. We have evidence for this effect in all genes. Interestingly, the strength of the effect differs somewhat by season.
+The wastewater treatment greatly reduces the absolute copy numbers of the AR genes, but it does not change the relative copy numbers as much. We have evidence for this effect in all genes. Interestingly, the strength of the effect differs somewhat by season. The wastewater treatment does a "better job" removing AR genes in winter.
 
 ```{r, echo = FALSE}
-ww_arg_abs_emm_type <- emmeans(ww_arg_abs_fit, ~ type, type = 'response')
 ww_arg_abs_emm_season <- emmeans(ww_arg_abs_fit, ~ type | season, type = 'response')
 ww_arg_abs_emm_gene <- emmeans(ww_arg_abs_fit, ~ type | gene, type = 'response')
 
-ww_arg_rlt_emm_type <- emmeans(ww_arg_rlt_fit, ~ type, type = 'response')
 ww_arg_rlt_emm_season <- emmeans(ww_arg_rlt_fit, ~ type | season, type = 'response')
 ww_arg_rlt_emm_gene <- emmeans(ww_arg_rlt_fit, ~ type | gene, type = 'response')
 
-# FIXME If any contrasts need to be done, include them here.
+ww_arg_abs_contr_gene <- contrast(ww_arg_abs_emm_gene, 'pairwise')
+ww_arg_abs_contr_season <- contrast(ww_arg_abs_emm_season, 'pairwise')
 
-# FIXME Include the plots here.
+ww_arg_rlt_contr_gene <- contrast(ww_arg_rlt_emm_gene, 'pairwise')
+ww_arg_rlt_contr_season <- contrast(ww_arg_rlt_emm_season, 'pairwise')
+
+pd <- position_dodge(width = 0.3)
+
+# Plots by gene ID
+ww_arg_gene_type_means <- ww_arg_abs_emm_gene %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value)) %>%
+  mutate(type = factor(type, levels = c('influent', 'effluent')))
+
+ggplot(ww_arg_gene_type_means, aes(x = gene, group = interaction(gene, type), y = .value)) +
+  stat_interval(.width = c(0.66, 0.95), position = pd) +
+  stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled absolute ARG copy numbers') +
+  theme(legend.position = c(0.65, 0.15), legend.box = 'horizontal')
+
+ww_rlt_gene_type_means <- ww_arg_rlt_emm_gene %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value)) %>%
+  mutate(type = factor(type, levels = c('influent', 'effluent')))
+
+ggplot(ww_rlt_gene_type_means, aes(x = gene, group = interaction(gene, type), y = .value)) +
+  stat_interval(.width = c(0.66, 0.95), position = pd) +
+  stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled relative ARG copy numbers') +
+  theme(legend.position = c(0.65, 0.15), legend.box = 'horizontal')
+
+# Plots by season, absolute only
+ww_arg_season_type_means <- ww_arg_abs_emm_season %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value), 
+         season = factor(season, levels = c('fall', 'winter', 'spring')),
+         type = factor(type, levels = c('influent', 'effluent'))) 
+
+ggplot(ww_arg_season_type_means, aes(x = season, group = interaction(season, type), y = .value)) +
+  stat_interval(.width = c(0.66, 0.95), position = pd) +
+  stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled absolute ARG copy numbers') +
+  theme(legend.position = c(0.2, 0.15), legend.box = 'horizontal')
 ```
+
+The contrast plots show that after wastewater treatment, each AR gene is reduced to something like 1% to 3% of its original absolute copy numbers (with some uncertainty around those estimates). In winter, almost all of the copy numbers are removed (less than 1% remain after treatment) but in fall and spring the treatment is not as effective. In fact in spring the 95% credible interval overlaps 100%, meaning we do not even have good evidence that wastewater treatment removes any AR gene copies at all in the spring. I do not know how to interpret that result. It may be a result due to small sample size, but maybe you all have a good explanation for that pattern. (The relative changes are small.)
+
+```{r}
+ww_arg_abs_contr_gene_draws <- ww_arg_abs_contr_gene %>%
+  gather_emmeans_draws() %>%
+  mutate(copy_numbers = 'absolute')
+
+ww_arg_rlt_contr_gene_draws <- ww_arg_rlt_contr_gene %>%
+  gather_emmeans_draws() %>%
+  mutate(copy_numbers = 'relative')
+
+ggplot(rbind(ww_arg_abs_contr_gene_draws, ww_arg_rlt_contr_gene_draws) %>% mutate(.value = exp(.value)), 
+       aes(x = gene,  y = .value)) +
+  facet_wrap(~ copy_numbers, scales = 'free_y') +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_summary(fun = median, geom = "point", size = 2) +
+  geom_hline(yintercept = 1, linetype = 'dotted', color = 'gray50') +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'effluent/influent ratio') +
+  theme(legend.position = c(0.2, 0.15), legend.box = 'horizontal') +
+  ggtitle('effluent:influent ARG copy number ratio by gene')
+
+ww_arg_abs_contr_season_draws <- ww_arg_abs_contr_season %>%
+  gather_emmeans_draws() %>%
+  mutate(copy_numbers = 'absolute')
+
+ggplot(rbind(ww_arg_abs_contr_season_draws, ww_arg_rlt_contr_season_draws) %>% 
+         mutate(.value = exp(.value), season = factor(season, levels = c('fall', 'winter', 'spring'))), 
+       aes(x = season,  y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_summary(fun = median, geom = "point", size = 2) +
+  geom_hline(yintercept = 1, linetype = 'dotted', color = 'gray50') +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'effluent/influent ratio') +
+  theme(legend.position = c(0.15, 0.8), legend.box = 'horizontal') +
+  ggtitle('effluent:influent ARG absolute copy number ratio by season')
+```
+
 
 # Estimated marginal mean and contrast tables
 
