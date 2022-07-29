@@ -97,6 +97,8 @@ plot_marginal_effect <- function(variable, fit, y_label, n_x = 50, y_scale_trans
     scale_x_continuous(name = variable, trans = x_scale_trans, breaks = x_break_list[[variable]]) +
     scale_y_continuous(name = y_label, trans = y_scale_trans)
 }
+
+print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
 ```
 
 
@@ -708,8 +710,6 @@ ggplot(season_mean_draws, aes(x = season, y = p)) +
 Below is the same information from the effect size plots above, but in table form. Medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided. This emphasizes that 95% is not the only important one to look at although "traditionally" it is the only one reported in manuscripts.
 
 ```{r, echo = FALSE}
-print_ci <- function(l, u, nsig = 3) glue('({signif(l, nsig)}, {signif(u, nsig)})') 
-
 table_emtrends <- function(variable, fit) {
   trends <- emtrends(fit, ~ taxon, var = paste0(variable, '_scaled'))
   trend_quants <- Rutilitybelt::emm_quantile(trends)
@@ -1343,7 +1343,7 @@ ggplot(ww_arg_season_type_means, aes(x = season, group = interaction(season, typ
 
 The contrast plots show that after wastewater treatment, each AR gene is reduced to something like 1% to 3% of its original absolute copy numbers (with some uncertainty around those estimates). In winter, almost all of the copy numbers are removed (less than 1% remain after treatment) but in fall and spring the treatment is not as effective. In fact in spring the 95% credible interval overlaps 100%, meaning we do not even have good evidence that wastewater treatment removes any AR gene copies at all in the spring. I do not know how to interpret that result. It may be a result due to small sample size, but maybe you all have a good explanation for that pattern. (The relative changes are small.)
 
-```{r}
+```{r, echo = FALSE}
 ww_arg_abs_contr_gene_draws <- ww_arg_abs_contr_gene %>%
   gather_emmeans_draws() %>%
   mutate(copy_numbers = 'absolute')
@@ -1379,12 +1379,66 @@ ggplot(rbind(ww_arg_abs_contr_season_draws, ww_arg_rlt_contr_season_draws) %>%
   ggtitle('effluent:influent ARG absolute copy number ratio by season')
 ```
 
-
 # Estimated marginal mean and contrast tables
 
 This is the same information as in the plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
 
-```{r}
-# FIXME Include the tables here.
+```{r, echo = FALSE}
+ww_arg_gene_type_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(gene, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(gene, type, estimate, ci99, ci95, ci90, ci66) %>%
+  arrange(gene, type) %>%
+  gt(caption = glue('Estimated absolute copy numbers in wastewater influent and effluent')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_rlt_gene_type_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(gene, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(gene, type, estimate, ci99, ci95, ci90, ci66) %>%
+  arrange(gene, type) %>%
+  gt(caption = glue('Estimated relative copy numbers in wastewater influent and effluent')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_arg_season_type_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, type, estimate, ci99, ci95, ci90, ci66) %>%
+  arrange(season, type) %>%
+  gt(caption = glue('Estimated absolute copy numbers in wastewater influent and effluent by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_arg_abs_contr_gene_draws %>%
+  select(-copy_numbers) %>%
+  mutate(.value = exp(.value)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(gene, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(gene, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Ratio of absolute copy numbers in wastewater influent and effluent by gene')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_arg_abs_contr_season_draws %>%
+  select(-copy_numbers) %>%
+  mutate(.value = exp(.value), season = factor(season, levels = c('fall', 'winter', 'spring'))) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Ratio of relative copy numbers in wastewater influent and effluent by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
 ```
 
