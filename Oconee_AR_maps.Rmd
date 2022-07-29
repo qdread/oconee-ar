@@ -1282,19 +1282,21 @@ pp_check(ww_arg_rlt_fit) + scale_x_log10()
 
 ### Estimated marginal mean and contrast plots
 
-Calculate and plot estimated marginal means for the absolute and relative ARG copy numbers. We will show the overall effect of influent vs. effluent, and show the effects separately for each season and for each gene. Also, plot contrasts within season and within gene.
+Calculate and plot estimated marginal means for the absolute and relative ARG copy numbers. We will show the overall effect of influent vs. effluent (question 2j, for absolute only as it doesn't make sense to do it for relative), and show the effects separately for each season and for each gene. Also, plot contrasts within season and within gene.
 
 The wastewater treatment greatly reduces the absolute copy numbers of the AR genes, but it does not change the relative copy numbers as much. We have evidence for this effect in all genes. Interestingly, the strength of the effect differs somewhat by season. The wastewater treatment does a "better job" removing AR genes in winter.
 
 ```{r, echo = FALSE}
 ww_arg_abs_emm_season <- emmeans(ww_arg_abs_fit, ~ type | season, type = 'response')
 ww_arg_abs_emm_gene <- emmeans(ww_arg_abs_fit, ~ type | gene, type = 'response')
+ww_arg_abs_emm_overall <- emmeans(ww_arg_abs_fit, ~ type, type = 'response')
 
 ww_arg_rlt_emm_season <- emmeans(ww_arg_rlt_fit, ~ type | season, type = 'response')
 ww_arg_rlt_emm_gene <- emmeans(ww_arg_rlt_fit, ~ type | gene, type = 'response')
 
 ww_arg_abs_contr_gene <- contrast(ww_arg_abs_emm_gene, 'pairwise')
 ww_arg_abs_contr_season <- contrast(ww_arg_abs_emm_season, 'pairwise')
+ww_arg_abs_contr_overall <- contrast(ww_arg_abs_emm_overall, 'pairwise')
 
 ww_arg_rlt_contr_gene <- contrast(ww_arg_rlt_emm_gene, 'pairwise')
 ww_arg_rlt_contr_season <- contrast(ww_arg_rlt_emm_season, 'pairwise')
@@ -1307,9 +1309,17 @@ ww_arg_gene_type_means <- ww_arg_abs_emm_gene %>%
   mutate(.value = exp(.value)) %>%
   mutate(type = factor(type, levels = c('influent', 'effluent')))
 
-ggplot(ww_arg_gene_type_means, aes(x = gene, group = interaction(gene, type), y = .value)) +
+ww_arg_overall_means <- ww_arg_abs_emm_overall %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value)) %>%
+  mutate(type = factor(type, levels = c('influent', 'effluent')), gene = 'OVERALL')
+
+ggplot(bind_rows(ww_arg_gene_type_means, ww_arg_overall_means) %>%
+         mutate(gene = factor(gene, levels = c('OVERALL', as.character(unique(ww_arg_gene_type_means$gene))))),
+       aes(x = gene, group = interaction(gene, type), y = .value)) +
   stat_interval(.width = c(0.66, 0.95), position = pd) +
   stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  geom_vline(xintercept = 1.5) +
   scale_color_brewer(palette = 'Blues', name = 'credible interval') +
   scale_y_log10(name = 'modeled absolute ARG copy numbers') +
   theme(legend.position = c(0.65, 0.15), legend.box = 'horizontal')
@@ -1341,20 +1351,24 @@ ggplot(ww_arg_season_type_means, aes(x = season, group = interaction(season, typ
   theme(legend.position = c(0.2, 0.15), legend.box = 'horizontal')
 ```
 
-The contrast plots show that after wastewater treatment, each AR gene is reduced to something like 1% to 3% of its original absolute copy numbers (with some uncertainty around those estimates). In winter, almost all of the copy numbers are removed (less than 1% remain after treatment) but in fall and spring the treatment is not as effective. In fact in spring the 95% credible interval overlaps 100%, meaning we do not even have good evidence that wastewater treatment removes any AR gene copies at all in the spring. I do not know how to interpret that result. It may be a result due to small sample size, but maybe you all have a good explanation for that pattern. (The relative changes are small.)
+The contrast plots show that after wastewater treatment, each AR gene is reduced to something like 1% to 3% of its original absolute copy numbers (with some uncertainty around those estimates); the overall effect is reducing copy numbers to 2% of the original. In winter, almost all of the copy numbers are removed (less than 1% remain after treatment) but in fall and spring the treatment is not as effective. In fact in spring the 95% credible interval overlaps 100%, meaning we do not even have good evidence that wastewater treatment removes any AR gene copies at all in the spring. I do not know how to interpret that result. It may be a result due to small sample size, but maybe you all have a good explanation for that pattern. (The relative changes are small.)
 
 ```{r, echo = FALSE}
 ww_arg_abs_contr_gene_draws <- ww_arg_abs_contr_gene %>%
   gather_emmeans_draws() %>%
   mutate(copy_numbers = 'absolute')
 
+ww_arg_abs_contr_overall_draws <- ww_arg_abs_contr_overall %>%
+  gather_emmeans_draws() %>%
+  mutate(copy_numbers = 'absolute', gene = 'OVERALL')
+
 ww_arg_rlt_contr_gene_draws <- ww_arg_rlt_contr_gene %>%
   gather_emmeans_draws() %>%
   mutate(copy_numbers = 'relative')
 
-ggplot(rbind(ww_arg_abs_contr_gene_draws, ww_arg_rlt_contr_gene_draws) %>% mutate(.value = exp(.value)), 
+ggplot(rbind(ww_arg_abs_contr_gene_draws, ww_arg_abs_contr_overall_draws, ww_arg_rlt_contr_gene_draws) %>% mutate(.value = exp(.value), gene = factor(gene, levels = c('OVERALL', as.character(unique(ww_arg_gene_type_means$gene))))), 
        aes(x = gene,  y = .value)) +
-  facet_wrap(~ copy_numbers, scales = 'free_y') +
+  facet_wrap(~ copy_numbers, scales = 'free') +
   stat_interval(.width = c(0.66, 0.95)) +
   stat_summary(fun = median, geom = "point", size = 2) +
   geom_hline(yintercept = 1, linetype = 'dotted', color = 'gray50') +
@@ -1385,6 +1399,8 @@ This is the same information as in the plots above, but in table form. As above,
 
 ```{r, echo = FALSE}
 ww_arg_gene_type_means %>%
+  bind_rows(ww_arg_overall_means) %>%
+  mutate(gene = factor(gene, levels = c('OVERALL', as.character(unique(ww_arg_gene_type_means$gene))))) %>%
   median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
   select(-c(.point, .interval)) %>%
   pivot_wider(id_cols = c(gene, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
@@ -1418,6 +1434,8 @@ ww_arg_season_type_means %>%
   tab_options(column_labels.font.weight = 'bold')
 
 ww_arg_abs_contr_gene_draws %>%
+  bind_rows(ww_arg_abs_contr_overall_draws) %>%
+  mutate(gene = factor(gene, levels = c('OVERALL', as.character(unique(ww_arg_gene_type_means$gene))))) %>%
   select(-copy_numbers) %>%
   mutate(.value = exp(.value)) %>%
   median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
