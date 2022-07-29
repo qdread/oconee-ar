@@ -1381,7 +1381,7 @@ ww_arg_abs_contr_season_draws <- ww_arg_abs_contr_season %>%
   gather_emmeans_draws() %>%
   mutate(copy_numbers = 'absolute')
 
-ggplot(rbind(ww_arg_abs_contr_season_draws, ww_arg_rlt_contr_season_draws) %>% 
+ggplot(ww_arg_abs_contr_season_draws %>% 
          mutate(.value = exp(.value), season = factor(season, levels = c('fall', 'winter', 'spring'))), 
        aes(x = season,  y = .value)) +
   stat_interval(.width = c(0.66, 0.95)) +
@@ -1393,7 +1393,7 @@ ggplot(rbind(ww_arg_abs_contr_season_draws, ww_arg_rlt_contr_season_draws) %>%
   ggtitle('effluent:influent ARG absolute copy number ratio by season')
 ```
 
-# Estimated marginal mean and contrast tables
+### Estimated marginal mean and contrast tables
 
 This is the same information as in the plots above, but in table form. As above, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
 
@@ -1443,7 +1443,7 @@ ww_arg_abs_contr_gene_draws %>%
   pivot_wider(id_cols = c(gene, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
   mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
   select(gene, estimate, ci99, ci95, ci90, ci66) %>%
-  gt(caption = glue('Ratio of absolute copy numbers in wastewater influent and effluent by gene')) %>%
+  gt(caption = glue('Ratio of absolute copy numbers in wastewater effluent/influent by gene')) %>%
   cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
   tab_options(column_labels.font.weight = 'bold')
 
@@ -1455,8 +1455,207 @@ ww_arg_abs_contr_season_draws %>%
   pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
   mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
   select(season, estimate, ci99, ci95, ci90, ci66) %>%
-  gt(caption = glue('Ratio of relative copy numbers in wastewater influent and effluent by season')) %>%
+  gt(caption = glue('Ratio of relative copy numbers in wastewater effluent/influent by season')) %>%
   cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
   tab_options(column_labels.font.weight = 'bold')
 ```
 
+## Analysis for questions 2k-m. Change in antibiotic concentrations in influent vs. effluent
+
+For the presence-absence question, I will make 2x2 tables in the same way as I did for the presence-absence of the AR taxa.
+
+```{r}
+antibiotic_names <- names(ww_antibiotic_conc)[-(1:4)]
+ww_antibiotic_conc[, id := rep(1:12, each = 2)]
+
+# Function to make 2x2 table
+make_2x2_table <- function(antibiotic) {
+  dat_wide <- dcast(ww_antibiotic_conc, id ~ type, value.var = antibiotic)
+  dat_wide[, influent := ifelse(influent > 0, 'present', 'absent') |> factor(levels = c('absent', 'present'))]
+  dat_wide[, effluent := ifelse(effluent > 0, 'present', 'absent') |> factor(levels = c('absent', 'present'))]
+  with(dat_wide, table(influent, effluent))
+}
+
+for (antibiotic in antibiotic_names) {
+  print(antibiotic)
+  print(make_2x2_table(antibiotic))
+}
+```
+
+We have slightly better numbers for the chi-squared test but I still think not enough to run them. Therefore I will not do any statistical tests for question 2k; instead I will skip directly to questions 2l+2m and look at the concentrations instead. This is very similar to the model for AR gene copy numbers. We will use a hurdle gamma model to account for the non-negative values (concentrations can be exactly zero but cannot be <0). The model will have the same terms as the model for AR copy numbers.
+
+First reshape the data.
+
+```{r}
+ww_antconc_long <- melt(ww_antibiotic_conc, id.vars = c('id', 'sample_no', 'season', 'site', 'type'), value.name = 'concentration', variable.name = 'antibiotic')
+```
+
+### Fit statistical model
+
+The model includes main effects for influent/effluent, season, and which antibiotic it is, and interactions between influent/effluent x antibiotic, and influent/effluent x antibiotic. There is a random intercept for each ID (combination of season and site). 
+
+```{r}
+ww_antconc_fit <- brm(
+  concentration ~ type + season + antibiotic + antibiotic:type + season:type + (1|id:site),
+   data = ww_antconc_long[!antibiotic %in% 'total'], family = hurdle_gamma(link = 'log', link_shape = 'log', link_hu = 'logit'),
+   prior = c(
+    prior(normal(0, 3), class = b)
+  ),
+  chains = 4, iter = 3000, warmup = 2000, seed = 72922,
+  file = 'project/ww_antconc_fit'
+)
+```
+
+As done previously, check convergence and do a posterior predictive check. All looks good.
+
+```{r}
+max(rhat(ww_antconc_fit))
+pp_check(ww_antconc_fit) + scale_x_log10()
+```
+
+### Estimated marginal mean and contrast plots
+
+Calculate and plot estimated marginal means for concentration of each antibiotic in influent and effluent. We will show the overall effect of influent vs. effluent (question 2m), and show the effects separately for each season and for each gene (question 2l). Also, plot contrasts within season and within gene.
+
+The wastewater treatment does not reduce the concentration of antibiotics quite as much. On average it results in a modest reduction but many antibiotics are not reduced very much in concentration, and some even seem to increase (such as Ery). Interestingly, the purifying effect is larger in fall and winter and not effective at all in summer (when the incoming concentration of antibiotics is highest). Again I am not sure if this is an artifact of the small sample sizes or if there is really a pattern there.
+
+```{r, echo = FALSE}
+ww_antconc_emm_season <- emmeans(ww_antconc_fit, ~ type | season, type = 'response')
+ww_antconc_emm_ant <- emmeans(ww_antconc_fit, ~ type | antibiotic, type = 'response')
+ww_antconc_emm_overall <- emmeans(ww_antconc_fit, ~ type, type = 'response')
+
+ww_antconc_contr_ant <- contrast(ww_antconc_emm_ant, 'pairwise')
+ww_antconc_contr_season <- contrast(ww_antconc_emm_season, 'pairwise')
+ww_antconc_contr_overall <- contrast(ww_antconc_emm_overall, 'pairwise')
+
+pd <- position_dodge(width = 0.3)
+
+# Plots by antibiotic ID
+ww_antconc_type_means <- ww_antconc_emm_ant %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value)) %>%
+  mutate(type = factor(type, levels = c('influent', 'effluent')))
+
+ww_antconc_overall_means <- ww_antconc_emm_overall %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value)) %>%
+  mutate(type = factor(type, levels = c('influent', 'effluent')), antibiotic = 'OVERALL')
+
+pd <- position_dodge(width = 0.5)
+
+ggplot(bind_rows(ww_antconc_type_means, ww_antconc_overall_means) %>%
+         mutate(antibiotic = factor(antibiotic, levels = c('OVERALL', as.character(unique(ww_antconc_type_means$antibiotic))))),
+       aes(x = antibiotic, group = interaction(antibiotic, type), y = .value)) +
+  stat_interval(.width = c(0.66, 0.95), position = pd, size = 2) +
+  stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  geom_vline(xintercept = 1.5) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled antibiotic concentration') +
+  theme(legend.position = 'bottom')
+
+# Plots by season, absolute only
+ww_antconc_season_type_means <- ww_antconc_emm_season %>%
+  gather_emmeans_draws() %>%
+  mutate(.value = exp(.value), 
+         season = factor(season, levels = season_order),
+         type = factor(type, levels = c('influent', 'effluent'))) 
+
+ggplot(ww_antconc_season_type_means, aes(x = season, group = interaction(season, type), y = .value)) +
+  stat_interval(.width = c(0.66, 0.95), position = pd) +
+  stat_summary(aes(shape = type), fun = median, geom = "point", size = 2, position = pd) +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'modeled antibiotic concentration') +
+  theme(legend.position = c(0.7, 0.15), legend.box = 'horizontal')
+```
+
+The contrast plots show that after wastewater treatment, overall antibiotic concentration drops modestly to about 50% of what it was in the influent. This difference is driven by small decreases in all the antibiotics, most of which we don't have certain evidence for them actually decreasing on an individual basis. The season plot shows that the purifying effect is greatest in fall and winter but goes away in summer.
+
+```{r, echo = FALSE}
+ww_antconc_contr_ant_draws <- ww_antconc_contr_ant %>%
+  gather_emmeans_draws()
+
+ww_antconc_contr_overall_draws <- ww_antconc_contr_overall %>%
+  gather_emmeans_draws() %>%
+  mutate(antibiotic = 'OVERALL')
+
+ggplot(rbind(ww_antconc_contr_ant_draws, ww_antconc_contr_overall_draws) %>% 
+         mutate(.value = exp(.value), 
+                antibiotic = factor(antibiotic, levels = c('OVERALL', as.character(unique(ww_antconc_type_means$antibiotic))))), 
+       aes(x = antibiotic,  y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_summary(fun = median, geom = "point", size = 2) +
+  geom_vline(xintercept = 1.5) +
+  geom_hline(yintercept = 1, linetype = 'dotted', color = 'gray50') +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'effluent/influent ratio') +
+  theme(legend.position = c(0.6, 0.15), legend.box = 'horizontal') +
+  ggtitle('effluent:influent antibiotic concentration ratio by gene')
+
+ww_antconc_contr_season_draws <- ww_antconc_contr_season %>%
+  gather_emmeans_draws()
+
+ggplot(ww_antconc_contr_season_draws %>% 
+         mutate(.value = exp(.value), season = factor(season, levels = season_order)), 
+       aes(x = season,  y = .value)) +
+  stat_interval(.width = c(0.66, 0.95)) +
+  stat_summary(fun = median, geom = "point", size = 2) +
+  geom_hline(yintercept = 1, linetype = 'dotted', color = 'gray50') +
+  scale_color_brewer(palette = 'Blues', name = 'credible interval') +
+  scale_y_log10(name = 'effluent/influent ratio') +
+  theme(legend.position = c(0.15, 0.8), legend.box = 'horizontal') +
+  ggtitle('effluent:influent antibiotic concentration ratio by season')
+```
+
+### Estimated marginal mean and contrast tables
+
+This is the same information as in the plots above, but in table form. As always, medians and four different quantile credible intervals (99%, 95%, 90%, and 66%) are provided.
+
+```{r, echo = FALSE}
+ww_antconc_type_means %>%
+  bind_rows(ww_antconc_overall_means) %>%
+  mutate(antibiotic = factor(antibiotic, levels = c('OVERALL', as.character(unique(ww_antconc_type_means$antibiotic))))) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(antibiotic, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(antibiotic, type, estimate, ci99, ci95, ci90, ci66) %>%
+  arrange(antibiotic, type) %>%
+  gt(caption = glue('Estimated antibiotic concentration in wastewater influent and effluent')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_antconc_season_type_means %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, type, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, type, estimate, ci99, ci95, ci90, ci66) %>%
+  arrange(season, type) %>%
+  gt(caption = glue('Estimated antibiotic concentration in wastewater influent and effluent by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_antconc_contr_ant_draws %>%
+  bind_rows(ww_antconc_contr_overall_draws) %>%
+  mutate(antibiotic = factor(antibiotic, levels = c('OVERALL', as.character(unique(ww_antconc_type_means$antibiotic))))) %>%
+  mutate(.value = exp(.value)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(antibiotic, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(antibiotic, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Ratio of antibiotic concentrations in wastewater effluent/influent')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+
+ww_antconc_contr_season_draws %>%
+  mutate(.value = exp(.value), season = factor(season, levels = season_order)) %>%
+  median_qi(.width = c(0.66, 0.90, 0.95, 0.99)) %>%
+  select(-c(.point, .interval)) %>%
+  pivot_wider(id_cols = c(season, .value), names_from = .width, values_from = c(.lower, .upper)) %>%
+  mutate(estimate = signif(.value, 3), ci99 = print_ci(.lower_0.99, .upper_0.99), ci95 = print_ci(.lower_0.95, .upper_0.95), ci90 = print_ci(.lower_0.9, .upper_0.9), ci66 = print_ci(.lower_0.66, .upper_0.66)) %>%
+  select(season, estimate, ci99, ci95, ci90, ci66) %>%
+  gt(caption = glue('Ratio of antibiotic concentrations in wastewater effluent/influent by season')) %>%
+  cols_label(ci99 = '99% CI', ci95 = '95% CI', ci90 = '90% CI', ci66 = '66% CI') %>%
+  tab_options(column_labels.font.weight = 'bold')
+```
